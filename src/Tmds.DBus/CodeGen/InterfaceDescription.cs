@@ -5,7 +5,7 @@
 using System;
 using System.Collections.Generic;
 
-namespace Tmds.DBus.CodeGen
+namespace Tmds.DBus.Tool
 {
     internal class InterfaceDescription
     {

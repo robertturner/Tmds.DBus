@@ -7,7 +7,7 @@ using System.Collections.Generic;
 using System.Reflection;
 using Tmds.DBus.Protocol;
 
-namespace Tmds.DBus.CodeGen
+namespace Tmds.DBus.Tool
 {
     internal class SignalDescription
     {

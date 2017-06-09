@@ -3,7 +3,7 @@
 // See COPYING for details
 
 using System.Text;
-using Tmds.DBus.CodeGen;
+using Tmds.DBus.Tool;
 
 namespace Tmds.DBus.Protocol
 {

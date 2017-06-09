@@ -7,7 +7,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
 
-namespace Tmds.DBus.CodeGen
+namespace Tmds.DBus.Tool
 {
     static internal class ArgTypeInspector
     {
@@ -28,8 +28,7 @@ namespace Tmds.DBus.CodeGen
             typeof(ValueTuple<,,,>),
             typeof(ValueTuple<,,,,>),
             typeof(ValueTuple<,,,,,>),
-            typeof(ValueTuple<,,,,,,>),
-            typeof(ValueTuple<,,,,,,,>)
+            typeof(ValueTuple<,,,,,,>)
         };
         private static readonly IComparer<FieldInfo> s_valueTupleFieldComparer = new StructFieldInfoComparer(true);
         private static readonly IComparer<FieldInfo> s_otherFieldComparer = new StructFieldInfoComparer(false);
@@ -194,6 +193,11 @@ namespace Tmds.DBus.CodeGen
             return true;
         }
 
+        public static FieldInfo[] GetStructFields(Type structType)
+        {
+            return GetStructFields(structType, IsValueTuple(structType.GetTypeInfo()));
+        }
+
         public static FieldInfo[] GetStructFields(Type structType, bool isValueTuple)
         {
             var fields = structType.GetFields(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
@@ -241,11 +245,7 @@ namespace Tmds.DBus.CodeGen
                 if (_isValueTypleComparer)
                 {
                     // ValueTuples are not layout sequentially
-                    // The fields are named Item[1-7], Rest
-                    if (x.Name.Length == 4)
-                    {
-                        return 1;
-                    }
+                    // The fields are named Item[1-7]
                     return x.Name[x.Name.Length - 1].CompareTo(y.Name[y.Name.Length - 1]);
                 }
                 else

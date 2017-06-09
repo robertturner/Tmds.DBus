@@ -7,7 +7,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
-using Tmds.DBus.CodeGen;
+using Tmds.DBus.Tool;
 using Tmds.DBus.Protocol;
 
 namespace Tmds.DBus

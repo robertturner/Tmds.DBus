@@ -5,7 +5,7 @@ using System.Linq;
 using System.Threading.Tasks;
 using Microsoft.Extensions.CommandLineUtils;
 
-namespace Tmds.DBus.CodeGen
+namespace Tmds.DBus.Tool
 {
     class CodeGenArguments
     {
@@ -24,7 +24,7 @@ namespace Tmds.DBus.CodeGen
         public static void Main(string[] args)
         {
             var commandLineApp = new CommandLineApplication();
-            commandLineApp.Name = "dbus-codegen";
+            commandLineApp.Name = "dotnet-dbus";
             commandLineApp.HelpOption("-?|-h|--help");
             var serviceOption = commandLineApp.Option("--service", "DBus service", CommandOptionType.SingleValue);
             var addressOption = commandLineApp.Option("--daemon", "Address of DBus daemon. 'session'/'system'/<address> (default: session)", CommandOptionType.SingleValue);
@@ -96,7 +96,7 @@ namespace Tmds.DBus.CodeGen
                 Interfaces = interfaces
             };
             GenerateCodeAsync(codeGenArguments).Wait();
-            System.Console.WriteLine($"Generated: {Path.GetFullPath(codeGenArguments.OutputFileName)}");
+            Console.WriteLine($"Generated: {Path.GetFullPath(codeGenArguments.OutputFileName)}");
         }
 
         private async static Task GenerateCodeAsync(CodeGenArguments codeGenArguments)

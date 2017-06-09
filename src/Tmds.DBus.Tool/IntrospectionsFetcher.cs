@@ -3,7 +3,7 @@ using System.Linq;
 using System.Threading.Tasks;
 using System.Xml.Linq;
 
-namespace Tmds.DBus.CodeGen
+namespace Tmds.DBus.Tool
 {
 
     [DBusInterface("org.freedesktop.DBus.Introspectable")]
@@ -89,7 +89,7 @@ namespace Tmds.DBus.CodeGen
                     var split = fullName.Split(new[] { '.' });
                     var name = split[split.Length - 1];
                     proposedName = name;
-                    int index = 0;
+                    int index = 1;
                     while (_names.Contains(proposedName))
                     {
                         proposedName = $"{name}{index}";

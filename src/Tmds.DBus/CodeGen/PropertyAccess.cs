@@ -2,7 +2,7 @@
 // This software is made available under the MIT License
 // See COPYING for details
 
-namespace Tmds.DBus.CodeGen
+namespace Tmds.DBus.Tool
 {
     internal enum PropertyAccess
     {

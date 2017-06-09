@@ -6,7 +6,7 @@ using System;
 using System.Linq;
 using System.Reflection;
 
-namespace Tmds.DBus.CodeGen
+namespace Tmds.DBus.Tool
 {
     static class TypeExtensions
     {

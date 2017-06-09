@@ -8,7 +8,7 @@ using System.Reflection;
 using System.Reflection.Emit;
 using Tmds.DBus.Protocol;
 
-namespace Tmds.DBus.CodeGen
+namespace Tmds.DBus.Tool
 {
     internal class DBusObjectProxyTypeBuilder
     {

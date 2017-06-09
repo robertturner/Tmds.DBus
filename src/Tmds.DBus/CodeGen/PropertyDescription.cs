@@ -4,7 +4,7 @@
 
 using Tmds.DBus.Protocol;
 
-namespace Tmds.DBus.CodeGen
+namespace Tmds.DBus.Tool
 {
     internal class PropertyDescription
     {

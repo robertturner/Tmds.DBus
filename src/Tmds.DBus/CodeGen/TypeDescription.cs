@@ -11,7 +11,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Tmds.DBus.Protocol;
 
-namespace Tmds.DBus.CodeGen
+namespace Tmds.DBus.Tool
 {
     internal class TypeDescription
     {
@@ -378,31 +378,20 @@ namespace Tmds.DBus.CodeGen
                         tupleElementNames = tupleElementNamesAttribute.TransformNames;
                     }
                 }
-                int nameIdx = 0;
-                for (int i = 0; i < fields.Length;)
+                for (int i = 0; i < fields.Length; i++)
                 {
                     var field = fields[i];
                     var fieldType = field.FieldType;
-                    if (i == 7 && isValueTuple)
+                    var argumentSignature = Signature.GetSig(fieldType, isCompileTimeType: true);
+                    var name = tupleElementNames != null && tupleElementNames.Count > i ? tupleElementNames[i] : field.Name;
+                    arguments.Add(new ArgumentDescription(name, argumentSignature, fieldType));
+                    if (signature == null)
                     {
-                        fields = ArgTypeInspector.GetStructFields(fieldType, isValueTuple);
-                        i = 0;
+                        signature = argumentSignature;
                     }
                     else
                     {
-                        var argumentSignature = Signature.GetSig(fieldType, isCompileTimeType: true);
-                        var name = tupleElementNames != null && tupleElementNames.Count > nameIdx ? tupleElementNames[nameIdx] : field.Name;
-                        arguments.Add(new ArgumentDescription(name, argumentSignature, fieldType));
-                        if (signature == null)
-                        {
-                            signature = argumentSignature;
-                        }
-                        else
-                        {
-                            signature += argumentSignature;
-                        }
-                        i++;
-                        nameIdx++;
+                        signature += argumentSignature;
                     }
                 }
             }

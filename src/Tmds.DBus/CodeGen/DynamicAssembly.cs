@@ -10,7 +10,7 @@ using System.Runtime.CompilerServices;
 
 [assembly: InternalsVisibleTo(Tmds.DBus.Connection.DynamicAssemblyName)]
 
-namespace Tmds.DBus.CodeGen
+namespace Tmds.DBus.Tool
 {
     internal class DynamicAssembly
     {

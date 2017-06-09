@@ -6,7 +6,7 @@ using System;
 using System.Reflection;
 using Tmds.DBus.Protocol;
 
-namespace Tmds.DBus.CodeGen
+namespace Tmds.DBus.Tool
 {
     internal delegate void WriteMethodDelegate<in T>(MessageWriter writer, T value);
 
@@ -111,17 +111,9 @@ namespace Tmds.DBus.CodeGen
                 }
             }
 
-            bool isValueTuple;
-            if (ArgTypeInspector.IsStructType(type, out isValueTuple))
+            if (ArgTypeInspector.IsStructType(type))
             {
-                if (isValueTuple)
-                {
-                    return s_messageWriterWriteValueTupleStruct.MakeGenericMethod(type);
-                }
-                else
-                {
-                    return s_messageWriterWriteStruct.MakeGenericMethod(type);
-                }
+                return s_messageWriterWriteStruct.MakeGenericMethod(type);
             }
 
             throw new ArgumentException($"Cannot (de)serialize Type '{type.FullName}'");
@@ -146,6 +138,5 @@ namespace Tmds.DBus.CodeGen
         private static readonly MethodInfo s_messageWriterWriteDict = typeof(MessageWriter).GetMethod(nameof(MessageWriter.WriteFromDict));
         private static readonly MethodInfo s_messageWriterWriteDictionaryObject = typeof(MessageWriter).GetMethod(nameof(MessageWriter.WriteDictionaryObject));
         private static readonly MethodInfo s_messageWriterWriteStruct = typeof(MessageWriter).GetMethod(nameof(MessageWriter.WriteStructure));
-        private static readonly MethodInfo s_messageWriterWriteValueTupleStruct = typeof(MessageWriter).GetMethod(nameof(MessageWriter.WriteValueTupleStructure));
     }
 }

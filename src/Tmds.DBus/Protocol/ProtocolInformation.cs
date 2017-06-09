@@ -6,7 +6,7 @@
 using System;
 using System.Collections.Generic;
 using System.Reflection;
-using Tmds.DBus.CodeGen;
+using Tmds.DBus.Tool;
 
 namespace Tmds.DBus.Protocol
 {

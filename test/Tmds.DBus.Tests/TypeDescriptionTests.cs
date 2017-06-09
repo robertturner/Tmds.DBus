@@ -4,7 +4,7 @@ using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Runtime.CompilerServices;
-using Tmds.DBus.CodeGen;
+using Tmds.DBus.Tool;
 using Tmds.DBus.Protocol;
 using Xunit;
 
