@@ -198,7 +198,12 @@ namespace Tmds.DBus.Tests
                     change => { if (!filterEvents || (change.ServiceName == serviceName)) changeEvents.Add(change); };
                 var resolver = await conn2.ResolveServiceOwnerAsync(resolvedService, onChange);
 
+                System.Console.WriteLine($"{System.Environment.TickCount} RegisterServiceAsync {resolvedService}");
+
                 await conn1.RegisterServiceAsync(serviceName);
+
+                System.Console.WriteLine($"{System.Environment.TickCount} Registered {resolvedService}");
+
                 var e = changeEvents.Take(TimeOut());
                 Assert.Equal(serviceName, e.ServiceName);
                 Assert.Equal(null, e.OldOwner);
