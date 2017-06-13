@@ -329,8 +329,10 @@ namespace Tmds.DBus
             var namespaceLookup = serviceName.EndsWith(".*");
             var emittedServices = namespaceLookup ? new List<string>() : null;
 
+            System.Console.WriteLine($"{serviceName} ResolveServiceOwnerAsync");
             wrappedDisposable.Disposable = await _dbusConnection.WatchNameOwnerChangedAsync(serviceName,
                 e => {
+                    System.Console.WriteLine($"{serviceName}: change {e.ServiceName} {e.OldOwner} -> {e.NewOwner}");
                     bool first = false;
                     if (namespaceLookup)
                     {
