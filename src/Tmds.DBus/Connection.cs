@@ -314,8 +314,11 @@ namespace Tmds.DBus
             return DBus.NameHasOwnerAsync(serviceName);
         }
 
+        static int i = 0;
+
         public async Task<IDisposable> ResolveServiceOwnerAsync(string serviceName, Action<ServiceOwnerChangedEventArgs> handler)
         {
+            var resolve = Interlocked.Increment(ref i);
             ThrowIfNotConnected();
             ThrowIfRemoteIsNotBus();
             if (serviceName == "*")
@@ -329,10 +332,10 @@ namespace Tmds.DBus
             var namespaceLookup = serviceName.EndsWith(".*");
             var emittedServices = namespaceLookup ? new List<string>() : null;
 
-            System.Console.WriteLine($"{serviceName} ResolveServiceOwnerAsync");
+            System.Console.WriteLine($"{resolve} ResolveServiceOwnerAsync {serviceName}");
             wrappedDisposable.Disposable = await _dbusConnection.WatchNameOwnerChangedAsync(serviceName,
                 e => {
-                    System.Console.WriteLine($"{serviceName}: change {e.ServiceName} {e.OldOwner} -> {e.NewOwner}");
+                    System.Console.WriteLine($"{resolve} change {e.ServiceName} {e.OldOwner} -> {e.NewOwner}");
                     bool first = false;
                     if (namespaceLookup)
                     {
