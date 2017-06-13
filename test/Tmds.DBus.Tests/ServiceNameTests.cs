@@ -191,6 +191,7 @@ namespace Tmds.DBus.Tests
                 IConnection conn2 = new Connection(address);
                 await conn2.ConnectAsync();
 
+                System.Console.WriteLine($"{System.Environment.TickCount} WatchResolveService {resolvedService} {filterEvents}");
                 var cts = new CancellationTokenSource();
                 cts.CancelAfter(IsTravis ? TimeSpan.FromMinutes(5) : TimeSpan.FromSeconds(10));
                 var ct = cts.Token;
