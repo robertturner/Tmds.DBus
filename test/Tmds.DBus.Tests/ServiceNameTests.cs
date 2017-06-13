@@ -4,6 +4,8 @@ using System.Threading;
 using System.Threading.Tasks;
 using Xunit;
 
+[assembly: CollectionBehavior(MaxParallelThreads = 1)]
+
 namespace Tmds.DBus.Tests
 {
     public class ServiceNameTests
@@ -167,8 +169,6 @@ namespace Tmds.DBus.Tests
             }
         }
 
-        private static bool IsTravis = System.Environment.GetEnvironmentVariable("TRAVIS") == "true";
-
         [Theory]
         [InlineData("tmds.dbus.test", false)]
         [InlineData("tmds.dbus.test.*", false)]
@@ -204,13 +204,13 @@ namespace Tmds.DBus.Tests
 
                 System.Console.WriteLine($"{System.Environment.TickCount} Registered {resolvedService}");
 
-                var e = changeEvents.Take(TimeOut());
+                var e = await changeEvents.TakeAsync();
                 Assert.Equal(serviceName, e.ServiceName);
                 Assert.Equal(null, e.OldOwner);
                 Assert.Equal(conn1.LocalName, e.NewOwner);
 
                 await conn1.UnregisterServiceAsync(serviceName);
-                e = changeEvents.Take(TimeOut());
+                e = await changeEvents.TakeAsync();
                 Assert.Equal(serviceName, e.ServiceName);
                 Assert.Equal(conn1.LocalName, e.OldOwner);
                 Assert.Equal(null, e.NewOwner);
@@ -219,18 +219,25 @@ namespace Tmds.DBus.Tests
                 await conn1.RegisterServiceAsync(serviceName);
                 resolver = await conn2.ResolveServiceOwnerAsync(resolvedService, onChange);
 
-                e = changeEvents.Take(TimeOut());
+                e = await changeEvents.TakeAsync();
                 Assert.Equal(serviceName, e.ServiceName);
                 Assert.Equal(null, e.OldOwner);
                 Assert.Equal(conn1.LocalName, e.NewOwner);
             }
         }
+    }
 
-        static CancellationToken TimeOut()
+    static class BlockingCollectionExtensions
+    {
+        public static Task<T> TakeAsync<T>(this BlockingCollection<T> collection)
         {
-            var cts = new CancellationTokenSource();
-            cts.CancelAfter(IsTravis ? TimeSpan.FromMinutes(2) : TimeSpan.FromSeconds(10));
-            return cts.Token;
+            // avoid blocking xunit synchronizationcontext threadpool
+            return Task.Run(() => 
+            {
+                var cts = new CancellationTokenSource();
+                cts.CancelAfter(TimeSpan.FromSeconds(10));
+                return collection.Take(cts.Token);
+            });
         }
     }
 }
