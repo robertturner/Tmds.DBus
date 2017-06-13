@@ -192,9 +192,6 @@ namespace Tmds.DBus.Tests
                 await conn2.ConnectAsync();
 
                 System.Console.WriteLine($"{System.Environment.TickCount} WatchResolveService {resolvedService} {filterEvents}");
-                var cts = new CancellationTokenSource();
-                cts.CancelAfter(IsTravis ? TimeSpan.FromMinutes(5) : TimeSpan.FromSeconds(10));
-                var ct = cts.Token;
 
                 var changeEvents = new BlockingCollection<ServiceOwnerChangedEventArgs>(new ConcurrentQueue<ServiceOwnerChangedEventArgs>());
                 Action<ServiceOwnerChangedEventArgs> onChange =
@@ -202,13 +199,13 @@ namespace Tmds.DBus.Tests
                 var resolver = await conn2.ResolveServiceOwnerAsync(resolvedService, onChange);
 
                 await conn1.RegisterServiceAsync(serviceName);
-                var e = changeEvents.Take(ct);
+                var e = changeEvents.Take(TimeOut());
                 Assert.Equal(serviceName, e.ServiceName);
                 Assert.Equal(null, e.OldOwner);
                 Assert.Equal(conn1.LocalName, e.NewOwner);
 
                 await conn1.UnregisterServiceAsync(serviceName);
-                e = changeEvents.Take(ct);
+                e = changeEvents.Take(TimeOut());
                 Assert.Equal(serviceName, e.ServiceName);
                 Assert.Equal(conn1.LocalName, e.OldOwner);
                 Assert.Equal(null, e.NewOwner);
@@ -217,11 +214,18 @@ namespace Tmds.DBus.Tests
                 await conn1.RegisterServiceAsync(serviceName);
                 resolver = await conn2.ResolveServiceOwnerAsync(resolvedService, onChange);
 
-                e = changeEvents.Take(ct);
+                e = changeEvents.Take(TimeOut());
                 Assert.Equal(serviceName, e.ServiceName);
                 Assert.Equal(null, e.OldOwner);
                 Assert.Equal(conn1.LocalName, e.NewOwner);
             }
+        }
+
+        static CancellationToken TimeOut()
+        {
+            var cts = new CancellationTokenSource();
+            cts.CancelAfter(IsTravis ? TimeSpan.FromMinutes(2) : TimeSpan.FromSeconds(10));
+            return cts.Token;
         }
     }
 }
