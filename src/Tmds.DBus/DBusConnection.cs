@@ -74,7 +74,7 @@ namespace Tmds.DBus
         public const string DBusInterface = "org.freedesktop.DBus";
         private static readonly char[] s_dot = new[] { '.' };
 
-        public static async Task<DBusConnection> OpenAsync(string address, Action<Exception> onDisconnect, CancellationToken cancellationToken)
+        public static async Task<DBusConnection> OpenAsync(string address, Action<Exception> onDisconnect, CancellationToken cancellationToken, TimeSpan idleDisconnectTimeout)
         {
             var _entries = AddressEntry.ParseEntries(address);
             if (_entries.Length == 0)
@@ -104,7 +104,7 @@ namespace Tmds.DBus
                 break;
             }
 
-            return await DBusConnection.CreateAndConnectAsync(stream, onDisconnect);
+            return await DBusConnection.CreateAndConnectAsync(stream, onDisconnect, idleDisconnectTimeout);
         }
 
         private readonly IMessageStream _stream;
@@ -115,6 +115,9 @@ namespace Tmds.DBus
         private readonly Dictionary<ObjectPath, MethodHandler> _methodHandlers = new Dictionary<ObjectPath, MethodHandler>();
         private readonly Dictionary<ObjectPath, string[]> _childNames = new Dictionary<ObjectPath, string[]>();
         private readonly Dictionary<string, ServiceNameRegistration> _serviceNameRegistrations = new Dictionary<string, ServiceNameRegistration>();
+        private TimeSpan _idleDisconnectTimeout = TimeSpan.MaxValue;
+        private bool _idleTimerEnabled;
+        private Timer _idleTimer;
 
         private ConnectionState _state = ConnectionState.Created;
         private bool _disposed = false;
@@ -127,16 +130,67 @@ namespace Tmds.DBus
         public ConnectionInfo ConnectionInfo { get; private set; }
 
         // For testing
-        internal static async Task<DBusConnection> CreateAndConnectAsync(IMessageStream stream, Action<Exception> onDisconnect = null)
+        internal static Task<DBusConnection> CreateAndConnectAsync(IMessageStream stream)
+            => CreateAndConnectAsync(stream, onDisconnect: null, idleDisconnectTimeout: TimeSpan.MaxValue);
+
+        private static async Task<DBusConnection> CreateAndConnectAsync(IMessageStream stream, Action<Exception> onDisconnect, TimeSpan idleDisconnectTimeout)
         {
-            var connection = new DBusConnection(stream);
+            var connection = new DBusConnection(stream, idleDisconnectTimeout);
             await connection.ConnectAsync(onDisconnect);
             return connection;
         }
 
-        private DBusConnection(IMessageStream stream)
+        private bool CanTimeOut()
+        {
+            if (_idleDisconnectTimeout == TimeSpan.MaxValue)
+            {
+                return false;
+            }
+            if (_pendingMethods?.Count > 0 ||
+                _signalHandlers?.Count > 0 ||
+                _nameOwnerWatchers?.Count > 0)
+            {
+                return false;
+            }
+            return true;
+        }
+
+        private void CheckEnableTimeout()
+        {
+            if (_idleTimerEnabled)
+            {
+                return;
+            }
+            if (CanTimeOut())
+            {
+                _idleTimer = _idleTimer ?? new Timer(OnIdleTimeout, null, -1, -1);
+                _idleTimer.Change(_idleDisconnectTimeout, TimeSpan.FromMilliseconds(-1));
+                _idleTimerEnabled = true;
+            }
+        }
+
+        private void DisableTimeout()
+        {
+            if (!_idleTimerEnabled)
+            {
+                return;
+            }
+            _idleTimer.Change(Timeout.Infinite, Timeout.Infinite);
+            _idleTimerEnabled = false;
+        }
+
+        private void OnIdleTimeout(object state)
+        {
+            lock (_gate)
+            {
+                Disconnect(dispose: false, exception: new TimeoutException("Connection idle"));
+            }
+        }
+
+        private DBusConnection(IMessageStream stream, TimeSpan idleDisconnectTimeout)
         {
             _stream = stream;
+            _idleDisconnectTimeout = idleDisconnectTimeout;
             _sendQueue = new ConcurrentQueue<PendingSend>();
             _sendSemaphore = new SemaphoreSlim(1);
         }
@@ -319,6 +373,7 @@ namespace Tmds.DBus
                     {
                         task = CallAddMatchRuleAsync(rule.ToString());
                     }
+                    DisableTimeout();
                 }
             }
             SignalHandlerRegistration registration = new SignalHandlerRegistration(this, rule, handler);
@@ -407,6 +462,7 @@ namespace Tmds.DBus
                 {
                     _nameOwnerWatchers[key] = handler;
                     task = CallAddMatchRuleAsync(rule.ToString());
+                    DisableTimeout();
                 }
             }
             NameOwnerWatcherRegistration registration = new NameOwnerWatcherRegistration(this, key, rule, handler);
@@ -510,6 +566,7 @@ namespace Tmds.DBus
                     if (_pendingMethods?.TryGetValue(serialValue, out pending) == true)
                     {
                         _pendingMethods.Remove(serialValue);
+                        CheckEnableTimeout();
                     }
                 }
                 if (pending != null)
@@ -677,8 +734,9 @@ namespace Tmds.DBus
 
                 _state = ConnectionState.Disconnected;
                 _disposed = dispose;
-                _stream.Dispose();
                 _disconnectReason = exception;
+                _onDisconnect = null;
+
                 pendingMethods = _pendingMethods;
                 _pendingMethods = null;
                 signalHandlers = _signalHandlers;
@@ -687,7 +745,9 @@ namespace Tmds.DBus
                 _nameOwnerWatchers = null;
                 _serviceNameRegistrations.Clear();
 
-                _onDisconnect = null;
+                DisableTimeout();
+                _idleTimer?.Dispose();
+                _stream.Dispose();
 
                 Func<Exception> createException = () =>
                     dispose ? Connection.CreateDisposedException() : new DisconnectedException(exception);
@@ -905,6 +965,7 @@ namespace Tmds.DBus
                     ThrowIfNotConnecting();
                 }
                 _pendingMethods[msg.Header.Serial] = pending;
+                DisableTimeout();
             }
 
             try
@@ -916,6 +977,7 @@ namespace Tmds.DBus
                 lock (_gate)
                 {
                     _pendingMethods?.Remove(serial);
+                    CheckEnableTimeout();
                 }
                 throw;
             }
@@ -958,6 +1020,7 @@ namespace Tmds.DBus
                         {
                             CallRemoveMatchRule(rule.ToString());
                         }
+                        CheckEnableTimeout();
                     }
                 }
             }
@@ -974,6 +1037,7 @@ namespace Tmds.DBus
                     {
                         _nameOwnerWatchers.Remove(key);
                         CallRemoveMatchRule(rule.ToString());
+                        CheckEnableTimeout();
                     }
                 }
             }

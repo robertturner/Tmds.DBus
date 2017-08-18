@@ -452,5 +452,28 @@ namespace Tmds.DBus.Tests
                 Assert.Null(e.DisconnectReason);
             }
         }
+
+        [Fact]
+        public async Task AutoDisconnectIdleTime()
+        {
+            using (var dbusDaemon = new DBusDaemon())
+            {
+                await dbusDaemon.StartAsync();
+                var address = dbusDaemon.Address;
+                var connection = new Connection(address, new ConnectionOptions { AutoConnect = true, AutoDisconnectIdleTime = TimeSpan.Zero });
+
+                var changeEvents = new BlockingCollection<ConnectionStateChangedEventArgs>(new ConcurrentQueue<ConnectionStateChangedEventArgs>());
+                connection.StateChanged += (o, change) => 
+                {
+                    Console.WriteLine(change.State);
+                    changeEvents.Add(change);
+                };
+                ConnectionStateChangedEventArgs e;
+
+                await connection.ListServicesAsync();
+
+                await connection.ListServicesAsync();
+            }
+        }
     }
 }

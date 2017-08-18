@@ -2,11 +2,11 @@
 // This software is made available under the MIT License
 // See COPYING for details
 
+using System;
 using System.Threading;
 
 namespace Tmds.DBus
 {
-
     /// <summary>
     /// Options that configure the behavior of a Connection.
     /// </summary>
@@ -21,5 +21,10 @@ namespace Tmds.DBus
         /// Automatically connect and re-connect the Connection.
         /// </summary>
         public bool AutoConnect { get; set; }
+
+        /// <summary>
+        /// Automatically disconnect afer this time (for AutoConnect Connections).
+        /// </summary>
+        public TimeSpan AutoDisconnectIdleTime { get; set; } = TimeSpan.MaxValue;
     }
 }

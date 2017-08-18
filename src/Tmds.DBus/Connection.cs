@@ -40,6 +40,7 @@ namespace Tmds.DBus
         private readonly string _address;
         private readonly SynchronizationContext _synchronizationContext;
         private readonly bool _autoConnect;
+        private readonly TimeSpan _idleDisconnectTimeout;
 
         private ConnectionState _state = ConnectionState.Created;
         private bool _disposed = false;
@@ -121,6 +122,7 @@ namespace Tmds.DBus
             _factory = new ProxyFactory(this);
             _synchronizationContext = connectionOptions.SynchronizationContext;
             _autoConnect = connectionOptions.AutoConnect;
+            _idleDisconnectTimeout = _autoConnect == true ? connectionOptions.AutoDisconnectIdleTime : TimeSpan.MaxValue;
         }
 
         /// <summary>
@@ -182,7 +184,7 @@ namespace Tmds.DBus
             DBusConnection connection;
             try
             {
-                connection = await DBusConnection.OpenAsync(_address, OnDisconnect, _connectCts.Token);
+                connection = await DBusConnection.OpenAsync(_address, OnDisconnect, _connectCts.Token, _idleDisconnectTimeout);
             }
             catch (ConnectException ce)
             {
