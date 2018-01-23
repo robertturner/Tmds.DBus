@@ -2,9 +2,7 @@
 // This software is made available under the MIT License
 // See COPYING for details
 
-using System;
-
 namespace Tmds.DBus.Protocol
 {
-    delegate void SignalHandler(Message message, Exception ex);
+    public delegate void SignalHandler(Message message);
 }

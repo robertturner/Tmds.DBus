@@ -37,8 +37,7 @@ namespace Tmds.DBus.Tests
         public async Task<Message> ReceiveMessageAsync()
         {
             await _readSemaphore.WaitAsync();
-            Message message;
-            _readQueue.TryDequeue(out message);
+            _readQueue.TryDequeue(out Message message);
             return message;
         }
         

@@ -3,7 +3,7 @@
 // See COPYING for details
 
 using System.Text;
-using Tmds.DBus.CodeGen;
+using AccessTypes = Tmds.DBus.Objects.InterfaceObjDef.PropertyDef.AccessTypes;
 
 namespace Tmds.DBus.Protocol
 {
@@ -56,21 +56,23 @@ namespace Tmds.DBus.Protocol
             _sb.Append("    </signal>\n");
         }
 
-        public void WriteProperty(string name, Signature signature, PropertyAccess access)
+        public void WriteProperty(string name, Signature signature, AccessTypes access)
         {
             string propAccess;
             switch (access)
             {
-                case PropertyAccess.Read:
+                case AccessTypes.Read:
                     propAccess = "read";
                     break;
-                case PropertyAccess.Write:
+                case AccessTypes.Write:
                     propAccess = "write";
                     break;
-                case PropertyAccess.ReadWrite:
-                default:
+                case AccessTypes.ReadWrite:
                     propAccess = "readwrite";
                     break;
+                default:
+                    _sb.AppendFormat("    <property name=\"{0}\" type=\"{1}\"/>\n", name, signature);
+                    return;
             }
             _sb.AppendFormat("    <property name=\"{0}\" type=\"{1}\" access=\"{2}\"/>\n", name, signature, propAccess);
         }

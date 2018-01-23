@@ -3,339 +3,258 @@
 // See COPYING for details
 
 using System;
-using System.Net;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
-using Tmds.DBus.CodeGen;
 using Tmds.DBus.Protocol;
+using Tmds.DBus.Objects;
+using Tmds.DBus.Objects.DBus;
 
 namespace Tmds.DBus
 {
-    /// <summary>
-    /// Connection with a D-Bus peer.
-    /// </summary>
     public class Connection : IConnection
     {
-        [Flags]
-        private enum ConnectionType
-        {
-            None              = 0,
-            ClientManual      = 1,
-            ClientAutoConnect = 2,
-            Server            = 4
-        }
+        TaskCompletionSource<IDBusConnection> baseConnection;
+        TaskCompletionSource<IDBusConnection> newBaseConnection = new TaskCompletionSource<IDBusConnection>();
+        public IDBusConnection BaseDBusConnection => baseConnection?.Task.Result;
 
-        /// <summary>
-        /// Assembly name where the dynamically generated code resides.
-        /// </summary>
-        public const string DynamicAssemblyName = "Tmds.DBus.Emit";
+        public string Address => ConnectionContext.ConnectionAddress;
+        public string LocalName => BaseDBusConnection?.LocalName;
+        public bool? RemoteIsBus => BaseDBusConnection?.RemoteIsBus;
+        public IDBus DBus => BaseDBusConnection?.DBus;
 
-        private static Connection s_systemConnection;
-        private static Connection s_sessionConnection;
-        private static readonly object NoDispose = new object();
+        public ClientSetupResult ConnectionContext { get; private set; }
 
-        /// <summary>
-        /// An AutoConnect Connection to the system bus.
-        /// </summary>
-        public static Connection System => s_systemConnection ?? CreateSystemConnection();
-
-        /// <summary>
-        /// An AutoConnect Connection to the session bus.
-        /// </summary>
-        public static Connection Session => s_sessionConnection ?? CreateSessionConnection();
-
-        private class ProxyFactory : IProxyFactory
-        {
-            public Connection Connection { get; }
-            public ProxyFactory(Connection connection)
-            {
-                Connection = connection;
-            }
-            public T CreateProxy<T>(string serviceName, ObjectPath path)
-            {
-                return Connection.CreateProxy<T>(serviceName, path);
-            }
-        }
-
-        private readonly object _gate = new object();
-        private readonly Dictionary<ObjectPath, DBusAdapter> _registeredObjects = new Dictionary<ObjectPath, DBusAdapter>();
-        private readonly Func<Task<ClientSetupResult>> _connectFunction;
-        private readonly Action<object> _disposeAction;
-        private readonly SynchronizationContext _synchronizationContext;
-        private readonly ConnectionType _connectionType;
-
-        private ConnectionState _state = ConnectionState.Created;
-        private bool _disposed = false;
-        private IProxyFactory _factory;
-        private DBusConnection _dbusConnection;
-        private Task<DBusConnection> _dbusConnectionTask;
-        private TaskCompletionSource<DBusConnection> _dbusConnectionTcs;
-        private CancellationTokenSource _connectCts;
-        private Exception _disconnectReason;
-        private IDBus _bus;
-        private EventHandler<ConnectionStateChangedEventArgs> _stateChangedEvent;
-        private object _disposeUserToken = NoDispose;
-
-        private IDBus DBus
-        {
-            get
-            {
-                if (_bus != null)
+        public Connection(string address)
+            : this(new ClientSetupResult
                 {
-                    return _bus;
-                }
-                lock (_gate)
-                {
-                    _bus = _bus ?? CreateProxy<IDBus>(DBusConnection.DBusServiceName, DBusConnection.DBusObjectPath);
-                    return _bus;
-                }
-            }
-        }
-
-        /// <summary>
-        /// Occurs when the state changes.
-        /// </summary>
-        /// <remarks>
-        /// The event handler will be called when it is added to the event.
-        /// The event handler is invoked on the ConnectionOptions.SynchronizationContext.
-        /// </remarks>
-        public event EventHandler<ConnectionStateChangedEventArgs> StateChanged
-        {
-            add  
-            {
-                lock (_gate)
-                {
-                    _stateChangedEvent += value;
-                    if (_state != ConnectionState.Created)
-                    {
-                        EmitConnectionStateChanged(value);
-                    }
-                }
-            }
-            remove
-            {
-                lock (_gate)
-                {
-                    _stateChangedEvent -= value;
-                }
-            }  
-        }
-
-        /// <summary>
-        /// Creates a new Connection with a specific address.
-        /// </summary>
-        /// <param name="address">Address of the D-Bus peer.</param>
-        public Connection(string address) :
-            this(new ClientConnectionOptions(address))
+                    ConnectionAddress = address ?? throw new ArgumentNullException(nameof(address)),
+                    SupportsFdPassing = true,
+                    UserId = Environment.UserId
+                })
         { }
 
-        /// <summary>
-        /// Creates a new Connection with specific ConnectionOptions.
-        /// </summary>
-        /// <param name="connectionOptions"></param>
-        public Connection(ConnectionOptions connectionOptions)
+        public Connection(ClientSetupResult connectionContext)
         {
-            if (connectionOptions == null)
-                throw new ArgumentNullException(nameof(connectionOptions));
-
-            _factory = new ProxyFactory(this);
-            _synchronizationContext = connectionOptions.SynchronizationContext;
-            if (connectionOptions is ClientConnectionOptions clientConnectionOptions)
-            {
-                _connectionType = clientConnectionOptions.AutoConnect ? ConnectionType.ClientAutoConnect : ConnectionType.ClientManual ;
-                _connectFunction = clientConnectionOptions.SetupAsync;
-                _disposeAction = clientConnectionOptions.Teardown;
-            }
-            else if (connectionOptions is ServerConnectionOptions serverConnectionOptions)
-            {
-                _connectionType = ConnectionType.Server;
-                _state = ConnectionState.Connected;
-                _dbusConnection = new DBusConnection(localServer: true);
-                _dbusConnectionTask = Task.FromResult(_dbusConnection);
-                serverConnectionOptions.Connection = this;
-            }
-            else
-            {
-                throw new NotSupportedException($"Unknown ConnectionOptions type: '{typeof(ConnectionOptions).FullName}'");
-            }
+            ConnectionContext = connectionContext ?? throw new ArgumentNullException(nameof(connectionContext));
         }
 
-        /// <summary>
-        /// Connect with the remote peer.
-        /// </summary>
-        /// <returns>
-        /// Information about the established connection.
-        /// </returns>
-        /// <exception cref="ConnectException">There was an error establishing the connection.</exception>
-        /// <exception cref="ObjectDisposedException">The connection has been disposed.</exception>
-        /// <exception cref="InvalidOperationException">The operation is invalid in the current state.</exception>
-        /// <exception cref="DisconnectedException">The connection was closed after it was established.</exception>
-        public async Task<ConnectionInfo> ConnectAsync()
-            => (await DoConnectAsync()).ConnectionInfo;
-
-        private async Task<DBusConnection> DoConnectAsync()
+        public async Task ConnectAsync(Action<Exception> onDisconnect = null, CancellationToken cancellationToken = default(CancellationToken), IClientObjectProvider objProvider = default(IClientObjectProvider))
         {
-            Task<DBusConnection> connectionTask = null;
-            bool alreadyConnecting = false;
-            lock (_gate)
-            {
-                if (_disposed)
-                {
-                    ThrowDisposed();
-                }
+            if (Interlocked.CompareExchange(ref baseConnection, newBaseConnection, null) != null)
+                throw new InvalidOperationException("Can only connect once");
+            newBaseConnection = null;
+            FinishConnect(await DBusConnection.ConnectAsync(ConnectionContext, onDisconnect, cancellationToken, new ClientProxyManager(this)));
+        }
 
-                if (_connectionType == ConnectionType.ClientManual)
-                {
-                    if (_state != ConnectionState.Created)
-                    {
-                        throw new InvalidOperationException("Can only connect once");
-                    }
-                }
-                else
-                {
-                    if (_state == ConnectionState.Connecting || _state == ConnectionState.Connected)
-                    {
-                        connectionTask = _dbusConnectionTask;
-                        alreadyConnecting = true;
-                    }
-                }
-                if (!alreadyConnecting)
-                {
-                    _connectCts = new CancellationTokenSource();
-                    _dbusConnectionTcs = new TaskCompletionSource<DBusConnection>();
-                    _dbusConnectionTask = _dbusConnectionTcs.Task;
-                    connectionTask = _dbusConnectionTask;
-                    _state = ConnectionState.Connecting;
+        public void Connect(IDBusConnection connection)
+        {
+            if (Interlocked.CompareExchange(ref baseConnection, newBaseConnection, null) != null)
+                throw new InvalidOperationException("Can only connect once");
+            newBaseConnection = null;
+            FinishConnect(connection);
+        }
 
-                    EmitConnectionStateChanged();
-                }
-            }
-
-            if (alreadyConnecting)
-            {
-                return await connectionTask;
-            }
-
-            DBusConnection connection;
-            object disposeUserToken = NoDispose;
+        void FinishConnect(IDBusConnection connection)
+        {
+            baseConnection.SetResult(connection);
             try
             {
-                ClientSetupResult connectionContext = await _connectFunction();
-                disposeUserToken = connectionContext.TeardownToken;
-                connection = await DBusConnection.ConnectAsync(connectionContext, OnDisconnect, _connectCts.Token);
+                IConnection_Extensions.RegisterObject(this, properties ?? (properties = new Properties(this)), null);
+                IConnection_Extensions.RegisterObject(this, (introspectable = new Introspectable(this)), null);
+                IConnection_Extensions.RegisterObject(this, peer ?? (peer = new Peer()), null);
             }
-            catch (ConnectException ce)
+            catch (Exception)
             {
-                if (disposeUserToken != NoDispose)
-                {
-                    _disposeAction?.Invoke(disposeUserToken);
-                }
-                Disconnect(dispose: false, exception: ce);
+                BaseDBusConnection.Dispose();
                 throw;
             }
-            catch (Exception e)
-            {
-                if (disposeUserToken != NoDispose)
-                {
-                    _disposeAction?.Invoke(disposeUserToken);
-                }
-                var ce = new ConnectException(e.Message, e);
-                Disconnect(dispose: false, exception: ce);
-                throw ce;
-            }
-            lock (_gate)
-            {
-                if (_state == ConnectionState.Connecting)
-                {
-                    _disposeUserToken = disposeUserToken;
-                    _dbusConnection = connection;
-                    _connectCts.Dispose();
-                    _connectCts = null;
-                    _state = ConnectionState.Connected;
-                    _dbusConnectionTcs.SetResult(connection);
-                    _dbusConnectionTcs = null;
+        }
 
-                    EmitConnectionStateChanged();
-                }
-                else
+        #region Wellknown interfaces
+        Introspectable introspectable;
+        Peer peer;
+        Properties properties;
+
+        class Peer : IPeer
+        {
+            public Task<string> GetMachineId() { return Task.FromResult(Environment.MachineId); }
+            public Task Ping() { return Task.CompletedTask; }
+        }
+
+        class Introspectable : ObjectContext, IIntrospectable
+        {
+            public Introspectable(Connection con) { Connection = con; }
+            public readonly Connection Connection;
+
+            public Task<string> Introspect()
+            {
+                var path = CallContext.CurrentPath ?? ObjectPath.Root;
+                var writer = new IntrospectionWriter();
+                writer.WriteDocType();
+                writer.WriteNodeStart(path.Value);
+                var interfaces = Connection.BaseDBusConnection.RegisteredPathHandlers(path);
+                foreach (var @interface in interfaces)
                 {
-                    connection.Dispose();
-                    if (disposeUserToken != NoDispose)
+                    writer.WriteInterfaceStart(@interface.InterfaceName);
+                    var def = @interface.Handler.GetInterfaceDefinitions();
+                    foreach (var m in def.Methods)
                     {
-                        _disposeAction?.Invoke(disposeUserToken);
+                        writer.WriteMethodStart(m.Name);
+                        foreach (var arg in m.ArgTypes)
+                            writer.WriteInArg(arg.Name, arg.Signature);
+                        foreach (var arg in m.ReturnTypes)
+                            writer.WriteOutArg(arg.Name, arg.Signature);
+                        writer.WriteMethodEnd();
+                    }
+                    foreach (var p in def.Properties)
+                    {
+                        writer.WriteProperty(p.Name, p.Type.Signature, p.Access);
+                    }
+                    foreach (var s in def.Signals)
+                    {
+                        writer.WriteSignalStart(s.Name);
+                        foreach (var arg in s.ArgDefs)
+                            writer.WriteArg(arg.Name, arg.Signature);
+                        writer.WriteSignalEnd();
+                    }
+                    writer.WriteInterfaceEnd();
+                }
+                var children = Connection.BaseDBusConnection.RegisteredPathChildren(path);
+                if (children.Any())
+                {
+                    foreach (var child in children)
+                        writer.WriteChildNode(child);
+                }
+                writer.WriteNodeEnd();
+                return Task.FromResult(writer.ToString());
+            }
+        }
+
+        class Properties : ObjectContext, IProperties
+        {
+            public Properties(Connection connection) { Connection = connection; }
+            public readonly Connection Connection;
+
+            public override bool CheckExposure()
+            {
+                foreach (var handler in Connection.BaseDBusConnection.RegisteredPathHandlers(CallContext.CurrentPath, "org.freedesktop.DBus.Properties"))
+                {
+                    if (handler.Handler is ObjectAdapter adapter && adapter.Properties.Any())
+                        return true;
+                }
+                return false;
+            }
+
+            public Task<object> Get(string interface_name, string property_name)
+            {
+                foreach (var handler in Connection.BaseDBusConnection.RegisteredPathHandlers(CallContext.CurrentPath))
+                {
+                    if (handler.InterfaceName == interface_name)
+                    {
+                        if (handler.Handler is ObjectAdapter adapter)
+                        {
+                            if (adapter.Properties.TryGetValue(property_name, out ObjectAdapter.PropertyDetails prop))
+                            {
+                                if (prop.Getter == null)
+                                    throw new DBusException(DBusErrors.InvalidArgs, "Property not readable");
+                                return Task.FromResult(prop.Getter(adapter.Instance));
+                            }
+                            else
+                                throw new DBusException(DBusErrors.UnknownProperty, string.Empty);
+                        }
+                        else
+                        {
+                            // No way to currently pass property requests to 3rd party handlers. Pretty unlikely anyway
+                        }
                     }
                 }
-                ThrowIfNotConnected();
+                throw new DBusException(DBusErrors.UnknownInterface, "No properties found for interface");
             }
-            return connection;
-        }
 
-        /// <summary>
-        /// Disposes the connection.
-        /// </summary>
+            public Task Set(string interface_name, string property_name, object value)
+            {
+                foreach (var handler in Connection.BaseDBusConnection.RegisteredPathHandlers(CallContext.CurrentPath))
+                {
+                    if (handler.InterfaceName == interface_name)
+                    {
+                        if (handler.Handler is ObjectAdapter adapter)
+                        {
+                            if (adapter.Properties.TryGetValue(property_name, out ObjectAdapter.PropertyDetails prop))
+                            {
+                                if (prop.Setter == null)
+                                    throw new DBusException(DBusErrors.PropertyReadOnly, string.Empty);
+                                prop.Setter(adapter.Instance, value);
+                                return Task.CompletedTask;
+                            }
+                            else
+                                throw new DBusException(DBusErrors.UnknownProperty, string.Empty);
+                        }
+                        else
+                        {
+                            // No way to currently pass property requests to 3rd party handlers. Pretty unlikely anyway
+                        }
+                    }
+                }
+                throw new DBusException(DBusErrors.UnknownInterface, "No properties found for interface");
+            }
+
+            public Task<Dictionary<string, object>> GetAll(string interface_name)
+            {
+                foreach (var handler in Connection.BaseDBusConnection.RegisteredPathHandlers(CallContext.CurrentPath))
+                {
+                    if (handler.InterfaceName == interface_name)
+                    {
+                        if (handler.Handler is ObjectAdapter adapter)
+                        {
+                            return Task.FromResult(adapter.Properties.Where(p => p.Value.Getter != null)
+                                .ToDictionary(p => p.Key, p => p.Value.Getter(adapter.Instance)));
+                        }
+                        else
+                        {
+                            // No way to currently pass property requests to 3rd party handlers. Pretty unlikely anyway
+                        }
+                    }
+                }
+                throw new DBusException(DBusErrors.UnknownInterface, "No properties found for interface");
+            }
+
+            public Task<IDisposable> WatchPropertiesChanged(PropertiesChangedHandler callback)
+            {
+                PropertyChangedCallback = callback;
+                return null;
+            }
+
+            public void RaisePropertyChanged(string interfaceName, string propertyName, object newValue, ObjectPath path)
+            {
+                PropertyChangedCallback?.Invoke(interfaceName, new Dictionary<string, object> { { propertyName, newValue } }, new string[0], path);
+            }
+
+            PropertiesChangedHandler PropertyChangedCallback;
+        }
+        #endregion
+
         public void Dispose()
         {
-            Disconnect(dispose: true, exception: CreateDisposedException());
+            BaseDBusConnection?.Dispose();
         }
 
-        /// <summary>
-        /// Creates a proxy object that represents a remote D-Bus object.
-        /// </summary>
-        /// <typeparam name="T">Interface of the D-Bus object.</typeparam>
-        /// <param name="serviceName">Name of the service that exposes the object.</param>
-        /// <param name="path">Object path of the object.</param>
-        /// <returns>
-        /// Proxy object.
-        /// </returns>
-        public T CreateProxy<T>(string serviceName, ObjectPath path)
+        void CheckDisposed()
         {
-            CheckNotConnectionType(ConnectionType.Server);
-            return (T)CreateProxy(typeof(T), serviceName, path);
+            if (BaseDBusConnection != null && BaseDBusConnection.IsDisposed)
+                throw new ObjectDisposedException("this");
         }
 
-        /// <summary>
-        /// Releases a service name assigned to the connection.
-        /// </summary>
-        /// <param name="serviceName">Name of the service.</param>
-        /// <returns>
-        /// <c>true</c> when the name was assigned to this connection; <c>false</c> when the name was not assigned to this connection.
-        /// </returns>
-        /// <exception cref="ObjectDisposedException">The connection has been disposed.</exception>
-        /// <exception cref="InvalidOperationException">The operation is invalid in the current state.</exception>
-        /// <exception cref="DisconnectedException">The connection was closed after it was established.</exception>
-        /// <exception cref="DBusException">Error returned by remote peer.</exception>
-        /// <remarks>
-        /// This operation is not supported for AutoConnection connections.
-        /// </remarks>
+#if false
         public async Task<bool> UnregisterServiceAsync(string serviceName)
         {
-            CheckNotConnectionType(ConnectionType.ClientAutoConnect);
-            var connection = GetConnectedConnection();
-            var reply = await connection.ReleaseNameAsync(serviceName);
+            var reply = await _dbusConnection.ReleaseNameAsync(serviceName);
             return reply == ReleaseNameReply.ReplyReleased;
         }
 
-        /// <summary>
-        /// Queues a service name registration for the connection.
-        /// </summary>
-        /// <param name="serviceName">Name of the service.</param>
-        /// <param name="onAquired">Action invoked when the service name is assigned to the connection.</param>
-        /// <param name="onLost">Action invoked when the service name is no longer assigned to the connection.</param>
-        /// <param name="options">Options for the registration.</param>
-        /// <exception cref="ObjectDisposedException">The connection has been disposed.</exception>
-        /// <exception cref="InvalidOperationException">The operation is invalid in the current state.</exception>
-        /// <exception cref="DisconnectedException">The connection was closed after it was established.</exception>
-        /// <exception cref="DBusException">Error returned by remote peer.</exception>
-        /// <exception cref="ProtocolException">Unexpected reply.</exception>
-        /// <remarks>
-        /// This operation is not supported for AutoConnection connections.
-        /// </remarks>
         public async Task QueueServiceRegistrationAsync(string serviceName, Action onAquired = null, Action onLost = null, ServiceRegistrationOptions options = ServiceRegistrationOptions.Default)
         {
-            CheckNotConnectionType(ConnectionType.ClientAutoConnect);
-            var connection = GetConnectedConnection();
             if (!options.HasFlag(ServiceRegistrationOptions.AllowReplacement) && (onLost != null))
             {
                 throw new ArgumentException($"{nameof(onLost)} can only be set when {nameof(ServiceRegistrationOptions.AllowReplacement)} is also set", nameof(onLost));
@@ -350,7 +269,7 @@ namespace Tmds.DBus
             {
                 requestOptions |= RequestNameOptions.AllowReplacement;
             }
-            var reply = await connection.RequestNameAsync(serviceName, requestOptions, onAquired, onLost, CaptureSynchronizationContext());
+            var reply = await _dbusConnection.RequestNameAsync(serviceName, requestOptions, onAquired, onLost, SynchronizationContext.Current);
             switch (reply)
             {
                 case RequestNameReply.PrimaryOwner:
@@ -363,39 +282,8 @@ namespace Tmds.DBus
             }
         }
 
-        /// <summary>
-        /// Queues a service name registration for the connection.
-        /// </summary>
-        /// <param name="serviceName">Name of the service.</param>
-        /// <param name="options">Options for the registration.</param>
-        /// <exception cref="ObjectDisposedException">The connection has been disposed.</exception>
-        /// <exception cref="InvalidOperationException">The operation is invalid in the current state.</exception>
-        /// <exception cref="DisconnectedException">The connection was closed after it was established.</exception>
-        /// <exception cref="DBusException">Error returned by remote peer.</exception>
-        /// <exception cref="ProtocolException">Unexpected reply.</exception>
-        /// <remarks>
-        /// This operation is not supported for AutoConnection connections.
-        /// </remarks>
-        public Task QueueServiceRegistrationAsync(string serviceName, ServiceRegistrationOptions options)
-            => QueueServiceRegistrationAsync(serviceName, null, null, options);
-
-        /// <summary>
-        /// Requests a service name to be assigned to the connection.
-        /// </summary>
-        /// <param name="serviceName">Name of the service.</param>
-        /// <param name="onLost">Action invoked when the service name is no longer assigned to the connection.</param>
-        /// <param name="options"></param>
-        /// <exception cref="ObjectDisposedException">The connection has been disposed.</exception>
-        /// <exception cref="InvalidOperationException">The operation is invalid in the current state.</exception>
-        /// <exception cref="DisconnectedException">The connection was closed after it was established.</exception>
-        /// <exception cref="DBusException">Error returned by remote peer.</exception>
-        /// <remarks>
-        /// This operation is not supported for AutoConnection connections.
-        /// </remarks>
-        public async Task RegisterServiceAsync(string serviceName, Action onLost = null, ServiceRegistrationOptions options = ServiceRegistrationOptions.Default)
+        public async Task RegisterServiceAsync(string name, Action onLost = null, ServiceRegistrationOptions options = ServiceRegistrationOptions.Default)
         {
-            CheckNotConnectionType(ConnectionType.ClientAutoConnect);
-            var connection = GetConnectedConnection();
             if (!options.HasFlag(ServiceRegistrationOptions.AllowReplacement) && (onLost != null))
             {
                 throw new ArgumentException($"{nameof(onLost)} can only be set when {nameof(ServiceRegistrationOptions.AllowReplacement)} is also set", nameof(onLost));
@@ -410,7 +298,7 @@ namespace Tmds.DBus
             {
                 requestOptions |= RequestNameOptions.AllowReplacement;
             }
-            var reply = await connection.RequestNameAsync(serviceName, requestOptions, null, onLost, CaptureSynchronizationContext());
+            var reply = await _dbusConnection.RequestNameAsync(name, requestOptions, null, onLost, SynchronizationContext.Current);
             switch (reply)
             {
                 case RequestNameReply.PrimaryOwner:
@@ -425,185 +313,17 @@ namespace Tmds.DBus
             }
         }
 
-        /// <summary>
-        /// Requests a service name to be assigned to the connection.
-        /// </summary>
-        /// <param name="serviceName">Name of the service.</param>
-        /// <param name="options"></param>
-        /// <exception cref="ObjectDisposedException">The connection has been disposed.</exception>
-        /// <exception cref="InvalidOperationException">The operation is invalid in the current state.</exception>
-        /// <exception cref="DisconnectedException">The connection was closed after it was established.</exception>
-        /// <exception cref="DBusException">Error returned by remote peer.</exception>
-        /// <remarks>
-        /// This operation is not supported for AutoConnection connections.
-        /// </remarks>
-        public Task RegisterServiceAsync(string serviceName, ServiceRegistrationOptions options)
-            => RegisterServiceAsync(serviceName, null, options);
-
-        /// <summary>
-        /// Publishes an object.
-        /// </summary>
-        /// <param name="o">Object to publish.</param>
-        /// <exception cref="ObjectDisposedException">The connection has been disposed.</exception>
-        /// <exception cref="InvalidOperationException">The operation is invalid in the current state.</exception>
-        /// <exception cref="DisconnectedException">The connection was closed.</exception>
-        public Task RegisterObjectAsync(IDBusObject o)
-        {
-            return RegisterObjectsAsync(new[] { o });
-        }
-
-        /// <summary>
-        /// Publishes objects.
-        /// </summary>
-        /// <param name="objects">Objects to publish.</param>
-        /// <exception cref="ObjectDisposedException">The connection has been disposed.</exception>
-        /// <exception cref="InvalidOperationException">The operation is invalid in the current state.</exception>
-        /// <exception cref="DisconnectedException">The connection was closed.</exception>
-        /// <remarks>
-        /// This operation is not supported for AutoConnection connections.
-        /// </remarks>
-        public async Task RegisterObjectsAsync(IEnumerable<IDBusObject> objects)
-        {
-            CheckNotConnectionType(ConnectionType.ClientAutoConnect);
-            var connection = GetConnectedConnection();
-            var assembly = DynamicAssembly.Instance;
-            var registrations = new List<DBusAdapter>();
-            foreach (var o in objects)
-            {
-                var implementationType = assembly.GetExportTypeInfo(o.GetType());
-                var objectPath = o.ObjectPath;
-                var registration = (DBusAdapter)Activator.CreateInstance(implementationType.AsType(), _dbusConnection, objectPath, o, _factory, CaptureSynchronizationContext());
-                registrations.Add(registration);
-            }
-
-            lock (_gate)
-            {
-                connection.AddMethodHandlers(registrations.Select(r => new KeyValuePair<ObjectPath, MethodHandler>(r.Path, r.HandleMethodCall)));
-
-                foreach (var registration in registrations)
-                {
-                    _registeredObjects.Add(registration.Path, registration);
-                }
-            }
-            try
-            {
-                foreach (var registration in registrations)
-                {
-                    await registration.WatchSignalsAsync();
-                }
-                lock (_gate)
-                {
-                    foreach (var registration in registrations)
-                    {
-                        registration.CompleteRegistration();
-                    }
-                }
-            }
-            catch
-            {
-                lock (_gate)
-                {
-                    foreach (var registration in registrations)
-                    {
-                        registration.Unregister();
-                        _registeredObjects.Remove(registration.Path);
-                    }
-                    connection.RemoveMethodHandlers(registrations.Select(r => r.Path));
-                }
-                throw;
-            }
-        }
-
-        /// <summary>
-        /// Unpublishes an object.
-        /// </summary>
-        /// <param name="path">Path of object to unpublish.</param>
-        /// <exception cref="ObjectDisposedException">The connection has been disposed.</exception>
-        /// <exception cref="InvalidOperationException">The operation is invalid in the current state.</exception>
-        /// <exception cref="DisconnectedException">The connection is closed.</exception>
-        public void UnregisterObject(ObjectPath path)
-            => UnregisterObjects(new[] { path });
-
-        /// <summary>
-        /// Unpublishes an object.
-        /// </summary>
-        /// <param name="o">object to unpublish.</param>
-        /// <exception cref="ObjectDisposedException">The connection has been disposed.</exception>
-        /// <exception cref="InvalidOperationException">The operation is invalid in the current state.</exception>
-        /// <exception cref="DisconnectedException">The connection is closed.</exception>
-        public void UnregisterObject(IDBusObject o)
-            => UnregisterObject(o.ObjectPath);
-
-        /// <summary>
-        /// Unpublishes objects.
-        /// </summary>
-        /// <param name="paths">Paths of objects to unpublish.</param>
-        /// <exception cref="ObjectDisposedException">The connection has been disposed.</exception>
-        /// <exception cref="InvalidOperationException">The operation is invalid in the current state.</exception>
-        /// <exception cref="DisconnectedException">The connection is closed.</exception>
-        /// <remarks>
-        /// This operation is not supported for AutoConnection connections.
-        /// </remarks>
-        public void UnregisterObjects(IEnumerable<ObjectPath> paths)
-        {
-            CheckNotConnectionType(ConnectionType.ClientAutoConnect);
-            lock (_gate)
-            {
-                var connection = GetConnectedConnection();
-
-                foreach(var objectPath in paths)
-                {
-                    DBusAdapter registration;
-                    if (_registeredObjects.TryGetValue(objectPath, out registration))
-                    {
-                        registration.Unregister();
-                        _registeredObjects.Remove(objectPath);
-                    }
-                }
-                
-                connection.RemoveMethodHandlers(paths);
-            }
-        }
-
-        /// <summary>
-        /// Unpublishes objects.
-        /// </summary>
-        /// <param name="objects">Objects to unpublish.</param>
-        /// <exception cref="ObjectDisposedException">The connection has been disposed.</exception>
-        /// <exception cref="InvalidOperationException">The operation is invalid in the current state.</exception>
-        /// <exception cref="DisconnectedException">The connection is closed.</exception>
-        /// <remarks>
-        /// This operation is not supported for AutoConnection connections.
-        /// </remarks>
-        public void UnregisterObjects(IEnumerable<IDBusObject> objects)
-            => UnregisterObjects(objects.Select(o => o.ObjectPath));
-
-        /// <summary>
-        /// List services that can be activated.
-        /// </summary>
-        /// <returns>
-        /// List of activatable services.
-        /// </returns>
-        /// <exception cref="ConnectException">There was an error establishing the connection.</exception>
-        /// <exception cref="ObjectDisposedException">The connection has been disposed.</exception>
-        /// <exception cref="InvalidOperationException">The operation is invalid in the current state.</exception>
-        /// <exception cref="DisconnectedException">The connection is closed.</exception>
         public Task<string[]> ListActivatableServicesAsync()
-            => DBus.ListActivatableNamesAsync();
+        {
+            ThrowIfNotConnected();
+            ThrowIfRemoteIsNotBus();
+            return DBus.ListActivatableNamesAsync();
+        }
 
-        /// <summary>
-        /// Resolves the local address for a service.
-        /// </summary>
-        /// <param name="serviceName">Name of the service.</param>
-        /// <returns>
-        /// Local address of service. <c>null</c> is returned when the service name is not available.
-        /// </returns>
-        /// <exception cref="ConnectException">There was an error establishing the connection.</exception>
-        /// <exception cref="ObjectDisposedException">The connection has been disposed.</exception>
-        /// <exception cref="InvalidOperationException">The operation is invalid in the current state.</exception>
-        /// <exception cref="DisconnectedException">The connection is closed.</exception>
         public async Task<string> ResolveServiceOwnerAsync(string serviceName)
         {
+            ThrowIfNotConnected();
+            ThrowIfRemoteIsNotBus();
             try
             {
                 return await DBus.GetNameOwnerAsync(serviceName);
@@ -618,101 +338,74 @@ namespace Tmds.DBus
             }
         }
 
-        /// <summary>
-        /// Activates a service.
-        /// </summary>
-        /// <param name="serviceName">Name of the service.</param>
-        /// <returns>
-        /// The result of the activation.
-        /// </returns>
-        /// <exception cref="ConnectException">There was an error establishing the connection.</exception>
-        /// <exception cref="ObjectDisposedException">The connection has been disposed.</exception>
-        /// <exception cref="InvalidOperationException">The operation is invalid in the current state.</exception>
-        /// <exception cref="DisconnectedException">The connection is closed.</exception>
         public Task<ServiceStartResult> ActivateServiceAsync(string serviceName)
-            => DBus.StartServiceByNameAsync(serviceName, 0);
-
-        /// <summary>
-        /// Checks if a service is available.
-        /// </summary>
-        /// <param name="serviceName">Name of the service.</param>
-        /// <returns>
-        /// <c>true</c> when the service is available, <c>false</c> otherwise.
-        /// </returns>
-        /// <exception cref="ConnectException">There was an error establishing the connection.</exception>
-        /// <exception cref="ObjectDisposedException">The connection has been disposed.</exception>
-        /// <exception cref="InvalidOperationException">The operation is invalid in the current state.</exception>
-        /// <exception cref="DisconnectedException">The connection is closed.</exception>
-        public Task<bool> IsServiceActiveAsync(string serviceName)
-            => DBus.NameHasOwnerAsync(serviceName);
-
-        /// <summary>
-        /// Resolves the local address for a service.
-        /// </summary>
-        /// <param name="serviceName">Name of the service.</param>
-        /// <param name="handler">Action invoked when the local name of the service changes.</param>
-        /// <param name="onError">Action invoked when the connection closes.</param>
-        /// <returns>
-        /// Disposable that allows to stop receiving notifications.
-        /// </returns>
-        /// <exception cref="ConnectException">There was an error establishing the connection.</exception>
-        /// <exception cref="ObjectDisposedException">The connection has been disposed.</exception>
-        /// <exception cref="InvalidOperationException">The operation is invalid in the current state.</exception>
-        /// <exception cref="DisconnectedException">The connection is closed.</exception>
-        /// <remarks>
-        /// The event handler will be called when the service name is already registered.
-        /// </remarks>
-        public async Task<IDisposable> ResolveServiceOwnerAsync(string serviceName, Action<ServiceOwnerChangedEventArgs> handler, Action<Exception> onError = null)
         {
+            ThrowIfNotConnected();
+            ThrowIfRemoteIsNotBus();
+            return DBus.StartServiceByNameAsync(serviceName, 0);
+        }
+
+        public Task<bool> IsServiceActiveAsync(string serviceName)
+        {
+            ThrowIfNotConnected();
+            ThrowIfRemoteIsNotBus();
+            return DBus.NameHasOwnerAsync(serviceName);
+        }
+
+        public async Task<IDisposable> ResolveServiceOwnerAsync(string serviceName, Action<ServiceOwnerChangedEventArgs> handler)
+        {
+            ThrowIfNotConnected();
+            ThrowIfRemoteIsNotBus();
             if (serviceName == "*")
             {
                 serviceName = ".*";
             }
 
-            var synchronizationContext = CaptureSynchronizationContext();
-            var wrappedDisposable = new WrappedDisposable(synchronizationContext);
-            bool namespaceLookup = serviceName.EndsWith(".*");
-            bool _eventEmitted = false;
-            var _gate = new object();
-            var _emittedServices = namespaceLookup ? new List<string>() : null;
+            var synchronizationContext = SynchronizationContext.Current;
+            bool eventEmitted = false;
+            var wrappedDisposable = new WrappedDisposable();
+            var namespaceLookup = serviceName.EndsWith(".*");
+            var emittedServices = namespaceLookup ? new List<string>() : null;
 
-            Action<ServiceOwnerChangedEventArgs, Exception> handleEvent = (ownerChange, ex) => {
-                if (ex != null)
-                {
-                    if (onError == null)
-                    {
-                        return;
-                    }
-                    wrappedDisposable.Call(onError, ex, disposes: true);
-                    return;
-                }
-                bool first = false;
-                lock (_gate)
-                {
+            wrappedDisposable.Disposable = await _dbusConnection.WatchNameOwnerChangedAsync(serviceName,
+                e => {
+                    bool first = false;
                     if (namespaceLookup)
                     {
-                        first = _emittedServices?.Contains(ownerChange.ServiceName) == false;
-                        _emittedServices?.Add(ownerChange.ServiceName);
+                        first = emittedServices?.Contains(e.ServiceName) == false;
+                        emittedServices?.Add(e.ServiceName);
                     }
                     else
                     {
-                        first = _eventEmitted == false;
-                        _eventEmitted = true;
+                        first = eventEmitted == false;
+                        eventEmitted = true;
                     }
-                }
-                if (first)
-                {
-                    if (ownerChange.NewOwner == null)
+                    if (first)
                     {
-                        return;
+                        if (e.NewOwner == null)
+                        {
+                            return;
+                        }
+                        e.OldOwner = null;
                     }
-                    ownerChange.OldOwner = null;
-                }
-                wrappedDisposable.Call(handler, ownerChange);
-            };
-
-            var connection = await GetConnectionTask();
-            wrappedDisposable.Disposable = await connection.WatchNameOwnerChangedAsync(serviceName, handleEvent).ConfigureAwait(false);
+                    if (synchronizationContext != null)
+                    {
+                        synchronizationContext.Post(o =>
+                        {
+                            if (!wrappedDisposable.IsDisposed)
+                            {
+                                handler(e);
+                            }
+                        }, null);
+                    }
+                    else
+                    {
+                        if (!wrappedDisposable.IsDisposed)
+                        {
+                            handler(e);
+                        }
+                    }
+                });
             if (namespaceLookup)
             {
                 serviceName = serviceName.Substring(0, serviceName.Length - 2);
@@ -730,332 +423,73 @@ namespace Tmds.DBus
                              || (serviceName.Length == 0 && service[0] != ':')))
                         {
                             var currentName = await ResolveServiceOwnerAsync(service);
-                            lock (_gate)
+                            if (currentName != null && !emittedServices.Contains(serviceName))
                             {
-                                if (currentName != null && !_emittedServices.Contains(serviceName))
-                                {
-                                    var e = new ServiceOwnerChangedEventArgs(service, null, currentName);
-                                    handleEvent(e, null);
-                                }
+                                emittedServices.Add(service);
+                                var e = new ServiceOwnerChangedEventArgs(service, null, currentName);
+                                handler(e);
                             }
                         }
                     }
-                    lock (_gate)
-                    {
-                        _emittedServices = null;
-                    }
+                    emittedServices = null;
                 }
                 else
                 {
                     var currentName = await ResolveServiceOwnerAsync(serviceName);
-                    lock (_gate)
+                    if (currentName != null && !eventEmitted)
                     {
-                        if (currentName != null && !_eventEmitted)
-                        {
-                            var e = new ServiceOwnerChangedEventArgs(serviceName, null, currentName);
-                            handleEvent(e, null);
-                        }
+                        eventEmitted = true;
+                        var e = new ServiceOwnerChangedEventArgs(serviceName, null, currentName);
+                        handler(e);
                     }
                 }
                 return wrappedDisposable;
             }
-            catch (Exception ex)
+            catch
             {
-                handleEvent(default(ServiceOwnerChangedEventArgs), ex);
+                wrappedDisposable.Dispose();
+                throw;
             }
-
-            return wrappedDisposable;
         }
+
+        public Task<string[]> ListServicesAsync()
+        {
+            ThrowIfNotConnected();
+            ThrowIfRemoteIsNotBus();
+
+            return DBus.ListNamesAsync();
+        }
+#endif
 
         /// <summary>
-        /// List services that are available.
+        /// Handle proxy call exceptions
         /// </summary>
-        /// <returns>
-        /// List of available services.
-        /// </returns>
-        /// <exception cref="ConnectException">There was an error establishing the connection.</exception>
-        /// <exception cref="ObjectDisposedException">The connection has been disposed.</exception>
-        /// <exception cref="InvalidOperationException">The operation is invalid in the current state.</exception>
-        /// <exception cref="DisconnectedException">The connection is closed.</exception>
-        public Task<string[]> ListServicesAsync()
-            => DBus.ListNamesAsync();
-
-        internal Task<string> StartServerAsync(string address)
+        /// <param name="ex"></param>
+        /// <returns>If exception was handled and no reply should be sent</returns>
+        bool ProxyExceptionHandler(Exception ex)
         {
-            lock (_gate)
-            {
-                ThrowIfNotConnected();
-                return _dbusConnection.StartServerAsync(address);
-            }
+            return false;
         }
 
-        // Used by tests
-        internal void Connect(DBusConnection dbusConnection)
+        public void RegisterObject(ObjectPath? path, string interfaceName, object instance, MemberExposure exposure)
         {
-            lock (_gate)
-            {
-                if (_state != ConnectionState.Created)
-                {
-                    throw new InvalidOperationException("Can only connect once");
-                }
-                _dbusConnection = dbusConnection;
-                _dbusConnectionTask = Task.FromResult(_dbusConnection);
-                _state = ConnectionState.Connected;
-            }
+            CheckDisposed();
+            var pathNonGlobal = path ?? ObjectPath.Root;
+            var adapter = new ObjectAdapter(this, path, interfaceName, instance, exposure, ProxyExceptionHandler);
+            BaseDBusConnection.AddMethodHandler(path, interfaceName, adapter);
+
+            if (path.HasValue && adapter.Properties.Any())
+                adapter.PropertyChanged += (ifceName, propertyName, newValue) => properties.RaisePropertyChanged(ifceName, propertyName, newValue, path.Value);
         }
 
-        private object CreateProxy(Type interfaceType, string busName, ObjectPath path)
+        public void UnregisterObject(ObjectPath? path, string interfaceName)
         {
-            var assembly = DynamicAssembly.Instance;
-            var implementationType = assembly.GetProxyTypeInfo(interfaceType);
-
-            DBusObjectProxy instance = (DBusObjectProxy)Activator.CreateInstance(implementationType.AsType(),
-                new object[] { this, _factory, busName, path });
-
-            return instance;
-        }
-
-        private void OnDisconnect(Exception e)
-        {
-            Disconnect(dispose: false, exception: e);
-        }
-
-        private void ThrowIfNotConnected()
-            => ThrowIfNotConnected(_disposed, _state, _disconnectReason);
-
-        internal static void ThrowIfNotConnected(bool disposed, ConnectionState state, Exception disconnectReason)
-        {
-            if (disposed)
+            CheckDisposed();
+            var handler = BaseDBusConnection.RemoveMethodHandler(path, interfaceName);
+            if (handler is ObjectAdapter adapter)
             {
-                ThrowDisposed();
+                adapter.Dispose();
             }
-            if (state == ConnectionState.Disconnected)
-            {
-                throw new DisconnectedException(disconnectReason);
-            }
-            else if (state == ConnectionState.Created)
-            {
-                throw new InvalidOperationException("Not Connected");
-            }
-            else if (state == ConnectionState.Connecting)
-            {
-                throw new InvalidOperationException("Connecting");
-            }
-        }
-
-        internal static Exception CreateDisposedException()
-            => new ObjectDisposedException(typeof(Connection).FullName);
-
-        private static void ThrowDisposed()
-        {
-            throw CreateDisposedException();
-        }
-
-        internal static void ThrowIfNotConnecting(bool disposed, ConnectionState state, Exception disconnectReason)
-        {
-            if (disposed)
-            {
-                ThrowDisposed();
-            }
-            if (state == ConnectionState.Disconnected)
-            {
-                throw new DisconnectedException(disconnectReason);
-            }
-            else if (state == ConnectionState.Created)
-            {
-                throw new InvalidOperationException("Not Connected");
-            }
-            else if (state == ConnectionState.Connected)
-            {
-                throw new InvalidOperationException("Already Connected");
-            }
-        }
-
-        private Task<DBusConnection> GetConnectionTask()
-        {
-            var connectionTask = Volatile.Read(ref _dbusConnectionTask);
-            if (connectionTask != null)
-            {
-                return connectionTask;
-            }
-            if (_connectionType == ConnectionType.ClientAutoConnect)
-            {
-                return DoConnectAsync();
-            }
-            else
-            {
-                return Task.FromResult(GetConnectedConnection());
-            }
-        }
-
-        private DBusConnection GetConnectedConnection()
-        {
-            var connection = Volatile.Read(ref _dbusConnection);
-            if (connection != null)
-            {
-                return connection;
-            }
-            lock (_gate)
-            {
-                ThrowIfNotConnected();
-                return _dbusConnection;
-            }
-        }
-
-        private void CheckNotConnectionType(ConnectionType disallowed)
-        {
-            if ((_connectionType & disallowed) != ConnectionType.None)
-            {
-                if (_connectionType == ConnectionType.ClientAutoConnect)
-                {
-                    throw new InvalidOperationException($"Operation not supported for {nameof(ClientConnectionOptions.AutoConnect)} Connection.");
-                }
-                else if (_connectionType == ConnectionType.Server)
-                {
-                    throw new InvalidOperationException($"Operation not supported for Server-based Connection.");
-                }
-            }
-        }
-
-        private void Disconnect(bool dispose, Exception exception)
-        {
-            lock (_gate)
-            {
-                if (dispose)
-                {
-                    _disposed = true;
-                }
-                var previousState = _state;
-                if (previousState == ConnectionState.Disconnecting || previousState == ConnectionState.Disconnected || previousState == ConnectionState.Created)
-                {
-                    return;
-                }
-
-                _disconnectReason = exception;
-
-                var connection = _dbusConnection;
-                var connectionCts = _connectCts;;
-                var dbusConnectionTask = _dbusConnectionTask;
-                var dbusConnectionTcs = _dbusConnectionTcs;
-                var disposeUserToken = _disposeUserToken;
-                _dbusConnection = null;
-                _connectCts = null;
-                _dbusConnectionTask = null;
-                _dbusConnectionTcs = null;
-                _disposeUserToken = NoDispose;
-
-                foreach (var registeredObject in _registeredObjects)
-                {
-                    registeredObject.Value.Unregister();
-                }
-                _registeredObjects.Clear();
-
-                _state = ConnectionState.Disconnecting;
-                EmitConnectionStateChanged();
-
-                connectionCts?.Cancel();
-                connectionCts?.Dispose();
-                dbusConnectionTcs?.SetException(
-                    dispose ? CreateDisposedException() : 
-                    exception.GetType() == typeof(ConnectException) ? exception :
-                    new DisconnectedException(exception));
-                connection?.Disconnect(dispose, exception);
-                if (disposeUserToken != NoDispose)
-                {
-                    _disposeAction?.Invoke(disposeUserToken);
-                }
-
-                if (_state == ConnectionState.Disconnecting)
-                {
-                    _state = ConnectionState.Disconnected;
-                    EmitConnectionStateChanged();
-                }
-            }
-        }
-
-        private void EmitConnectionStateChanged(EventHandler<ConnectionStateChangedEventArgs> handler = null)
-        {
-            var disconnectReason = _disconnectReason;
-            if (_state == ConnectionState.Connecting)
-            {
-                _disconnectReason = null;
-            }
-
-            if (handler == null)
-            {
-                handler = _stateChangedEvent;
-            }
-
-            if (handler == null)
-            {
-                return;
-            }
-
-            if (disconnectReason != null
-             && disconnectReason.GetType() != typeof(ConnectException)
-             && disconnectReason.GetType() != typeof(ObjectDisposedException)
-             && disconnectReason.GetType() != typeof(DisconnectedException))
-            {
-                disconnectReason = new DisconnectedException(disconnectReason);
-            }
-            var connectionInfo = _state == ConnectionState.Connected ? _dbusConnection.ConnectionInfo : null;
-            var stateChangeEvent = new ConnectionStateChangedEventArgs(_state, disconnectReason, connectionInfo);
-
-
-            if (_synchronizationContext != null && SynchronizationContext.Current != _synchronizationContext)
-            {
-                _synchronizationContext.Post(_ => handler(this, stateChangeEvent), null);
-            }
-            else
-            {
-                handler(this, stateChangeEvent);
-            }
-        }
-
-        internal async Task<Message> CallMethodAsync(Message message)
-        {
-            var connection = await GetConnectionTask();
-            try
-            {
-                return await connection.CallMethodAsync(message);
-            }
-            catch (DisconnectedException) when (_connectionType == ConnectionType.ClientAutoConnect)
-            {
-                connection = await GetConnectionTask();
-                return await connection.CallMethodAsync(message);
-            }
-        }
-
-        internal async Task<IDisposable> WatchSignalAsync(ObjectPath path, string @interface, string signalName, SignalHandler handler)
-        {
-            var connection = await GetConnectionTask();
-            try
-            {
-                return await connection.WatchSignalAsync(path, @interface, signalName, handler);
-            }
-            catch (DisconnectedException) when (_connectionType == ConnectionType.ClientAutoConnect)
-            {
-                connection = await GetConnectionTask();
-                return await connection.WatchSignalAsync(path, @interface, signalName, handler);
-            }
-        }
-
-        internal SynchronizationContext CaptureSynchronizationContext() => _synchronizationContext;
-
-        private static Connection CreateSessionConnection() => CreateConnection(Address.Session, ref s_sessionConnection);
-
-        private static Connection CreateSystemConnection() => CreateConnection(Address.System, ref s_systemConnection);
-
-        private static Connection CreateConnection(string address, ref Connection connection)
-        {
-            address = address ?? "unix:";
-            if (Volatile.Read(ref connection) != null)
-            {
-                return connection;
-            }
-            var newConnection = new Connection(new ClientConnectionOptions(address) { AutoConnect = true, SynchronizationContext = null });
-            Interlocked.CompareExchange(ref connection, newConnection, null);
-            return connection;
         }
     }
 }

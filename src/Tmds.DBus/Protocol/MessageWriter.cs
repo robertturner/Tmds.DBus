@@ -12,23 +12,23 @@ using System.IO;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Linq;
-using Tmds.DBus.CodeGen;
+using Tmds.DBus.Objects;
+using BaseLibs.Types;
 
 namespace Tmds.DBus.Protocol
 {
-    internal sealed class MessageWriter
+    public sealed class MessageWriter
     {
         EndianFlag endianness;
         MemoryStream stream;
-        List<UnixFd> fds;
-        bool  _skipNextStructPadding;
+        bool _skipNextStructPadding;
 
         static readonly Encoding stringEncoding = Encoding.UTF8;
 
         //a default constructor is a bad idea for now as we want to make sure the header and content-type match
-        public MessageWriter () : this (Environment.NativeEndianness) {}
+        public MessageWriter() : this(Environment.NativeEndianness) {}
 
-        public MessageWriter (EndianFlag endianness)
+        public MessageWriter(EndianFlag endianness)
         {
             this.endianness = endianness;
             stream = new MemoryStream ();
@@ -39,118 +39,171 @@ namespace Tmds.DBus.Protocol
             _skipNextStructPadding = true;
         }
 
-        public byte[] ToArray ()
+        public byte[] ToArray()
         {
-            return stream.ToArray ();
+            return stream.ToArray();
         }
 
-        public UnixFd[] UnixFds => fds?.ToArray() ?? Array.Empty<UnixFd>();
-
-        public void CloseWrite ()
+        public void CloseWrite()
         {
-            WritePad (8);
+            WritePad(8);
         }
 
-        public void WriteByte (byte val)
-        {
-            stream.WriteByte (val);
-        }
+        delegate void WriteHandler<T>(MessageWriter writer, T val);
+        delegate void WriteHandler(MessageWriter writer, object val);
 
-        public void WriteBoolean (bool val)
-        {
-            WriteUInt32 ((uint) (val ? 1 : 0));
-        }
+        static readonly MethodInfo s_messageWriterWriteDict = typeof(MessageWriter).GetMethod(nameof(MessageWriter.WriteFromDict));
+        static readonly MethodInfo s_messageWriterWriteArray = typeof(MessageWriter).GetMethod(nameof(MessageWriter.WriteArray));
+        static readonly MethodInfo s_messageWriterWriteDictionaryObject = typeof(MessageWriter).GetMethod(nameof(MessageWriter.WriteDictionaryObject));
+        static readonly MethodInfo s_messageWriterWriteStruct = typeof(MessageWriter).GetMethod(nameof(MessageWriter.WriteStructure));
 
-        // Buffer for integer marshaling
-        byte[] dst = new byte[8];
-        private unsafe void MarshalUShort (void* dataPtr)
+        static Type EnsureWriterForType(Type type)
         {
-            WritePad (2);
+            if (type.GetTypeInfo().IsEnum)
+                type = Enum.GetUnderlyingType(type);
 
-            if (endianness == Environment.NativeEndianness) {
-                fixed (byte* p = &dst[0])
-                    *((ushort*)p) = *((ushort*)dataPtr);
-            } else {
-                byte* data = (byte*)dataPtr;
-                dst[0] = data[1];
-                dst[1] = data[0];
+            if (objHandlers.TryGetValue(type, out WriteHandler handler))
+                return type;
+
+            if (ArgTypeInspector.IsDBusObjectType(type))
+                return typeof(IDBusObject);
+
+            var enumerableType = ArgTypeInspector.InspectEnumerableType(type, out Type elementType);
+            if (enumerableType != ArgTypeInspector.EnumerableType.NotEnumerable)
+            {
+                if ((enumerableType == ArgTypeInspector.EnumerableType.EnumerableKeyValuePair) ||
+                    (enumerableType == ArgTypeInspector.EnumerableType.GenericDictionary))
+                    AddTypeHandler(type, s_messageWriterWriteDict.MakeGenericMethod(elementType.GenericTypeArguments));
+                else if (enumerableType == ArgTypeInspector.EnumerableType.AttributeDictionary)
+                    AddTypeHandler(type, s_messageWriterWriteDictionaryObject.MakeGenericMethod(type));
+                else // Enumerable
+                    AddTypeHandler(type, s_messageWriterWriteArray.MakeGenericMethod(new[] { elementType }));
+                return type;
+            }
+            if (ArgTypeInspector.IsStructType(type))
+            {
+                AddTypeHandler(type, s_messageWriterWriteStruct.MakeGenericMethod(type));
+                return type;
             }
 
-            stream.Write (dst, 0, 2);
+            throw new ArgumentException($"Cannot (de)serialize Type '{type.FullName}'");
         }
 
-        unsafe public void WriteInt16 (short val)
+        static WriteHandler WriterForType(Type type)
         {
-            MarshalUShort (&val);
+            return objHandlers[EnsureWriterForType(type)];
+        }
+        static WriteHandler<T> WriterForType<T>()
+        {
+            return (WriteHandler<T>)genHandlersCache[EnsureWriterForType(typeof(T))];
         }
 
-        unsafe public void WriteUInt16 (ushort val)
+        static Dictionary<Type, WriteHandler> objHandlers = new Dictionary<Type, WriteHandler>
         {
-            MarshalUShort (&val);
+            { typeof(bool), (w, v) => w.WriteBoolean((bool)v) },
+            { typeof(byte), (w, v) => w.WriteByte((byte)v) },
+            { typeof(Int16), (w, v) => w.WriteInt16((Int16)v) },
+            { typeof(UInt16), (w, v) => w.WriteUInt16((UInt16)v) },
+            { typeof(Int32), (w, v) => w.WriteInt32((Int32)v) },
+            { typeof(UInt32), (w, v) => w.WriteUInt32((UInt32)v) },
+            { typeof(Int64), (w, v) => w.WriteInt64((Int64)v) },
+            { typeof(UInt64), (w, v) => w.WriteUInt64((UInt64)v) },
+            { typeof(float), (w, v) => w.WriteSingle((float)v) },
+            { typeof(double), (w, v) => w.WriteDouble((double)v) },
+            { typeof(ObjectPath), (w, v) => w.WriteObjectPath((ObjectPath)v) },
+            { typeof(Signature), (w, v) => w.WriteSignature((Signature)v) },
+            { typeof(string), (w, v) => w.WriteString((string)v) },
+            { typeof(object), (w, v) => w.WriteVariant(v) },
+            { typeof(IDBusObject), (w, v) => w.WriteBusObject((IDBusObject)v) }
+        };
+        static Dictionary<Type, object> genHandlersCache = new Dictionary<Type, object>
+        {
+            { typeof(bool), new WriteHandler<bool>((w, v) => w.WriteBoolean(v)) },
+            { typeof(byte), new WriteHandler<byte>((w, v) => w.WriteByte(v)) },
+            { typeof(Int16), new WriteHandler<Int16>((w, v) => w.WriteInt16(v)) },
+            { typeof(UInt16), new WriteHandler<UInt16>((w, v) => w.WriteUInt16(v)) },
+            { typeof(Int32), new WriteHandler<Int32>((w, v) => w.WriteInt32(v)) },
+            { typeof(UInt32), new WriteHandler<UInt32>((w, v) => w.WriteUInt32(v)) },
+            { typeof(Int64), new WriteHandler<Int64>((w, v) => w.WriteInt64(v)) },
+            { typeof(UInt64), new WriteHandler<UInt64>((w, v) => w.WriteUInt64(v)) },
+            { typeof(float), new WriteHandler<float>((w, v) => w.WriteSingle(v)) },
+            { typeof(double), new WriteHandler<double>((w, v) => w.WriteDouble(v)) },
+            { typeof(ObjectPath), new WriteHandler<ObjectPath>((w, v) => w.WriteObjectPath(v)) },
+            { typeof(Signature), new WriteHandler<Signature>((w, v) => w.WriteSignature(v)) },
+            { typeof(string), new WriteHandler<string>((w, v) => w.WriteString(v)) },
+            { typeof(object), new WriteHandler<object>((w, v) => w.WriteVariant(v)) },
+            { typeof(IDBusObject), new WriteHandler<IDBusObject>((w, v) => w.WriteBusObject(v)) }
+        };
+
+        static void AddTypeHandler(Type type, MethodInfo methodInfo)
+        {
+            var d = methodInfo.CreateCustomDelegate<WriteHandler>();
+            objHandlers[type] = d;
+            genHandlersCache[type] = methodInfo.CreateDelegate(typeof(WriteHandler<>).MakeGenericType(type));
         }
 
-        private unsafe void MarshalUInt (void* dataPtr)
+        public void Write(Type type, object val)
         {
-            WritePad (4);
+            var m = WriterForType(type);
+            m(this, val);
+        }
+        /*public void Write(IEnumerable<Type> types, IEnumerable<object> vals)
+        {
 
-            if (endianness == Environment.NativeEndianness) {
-                fixed (byte* p = &dst[0])
-                    *((uint*)p) = *((uint*)dataPtr);
-            } else {
-                byte* data = (byte*)dataPtr;
-                dst[0] = data[3];
-                dst[1] = data[2];
-                dst[2] = data[1];
-                dst[3] = data[0];
-            }
+            var m = WriterForType(type);
+            m(this, val);
+        }*/
 
-            stream.Write (dst, 0, 4);
+        #region Writers
+
+        public void WriteByte(byte val)
+        {
+            stream.WriteByte(val);
         }
 
-        unsafe public void WriteInt32 (int val)
+        public void WriteBoolean(bool val)
         {
-            MarshalUInt (&val);
+            WriteUInt32((uint)(val ? 1 : 0));
         }
 
-        unsafe public void WriteUInt32 (uint val)
+        public void WriteInt16(short val)
         {
-            MarshalUInt (&val);
+            MarshalTo(val, BitConverter.GetBytes);
         }
 
-        private unsafe void MarshalULong (void* dataPtr)
+        public void WriteUInt16 (ushort val)
         {
-            WritePad (8);
-
-            if (endianness == Environment.NativeEndianness) {
-                fixed (byte* p = &dst[0])
-                    *((ulong*)p) = *((ulong*)dataPtr);
-            } else {
-                byte* data = (byte*)dataPtr;
-                for (int i = 0; i < 8; ++i)
-                    dst[i] = data[7 - i];
-            }
-
-            stream.Write (dst, 0, 8);
+            MarshalTo(val, BitConverter.GetBytes);
         }
 
-        unsafe public void WriteInt64 (long val)
+        public void WriteInt32 (int val)
         {
-            MarshalULong (&val);
+            MarshalTo(val, BitConverter.GetBytes);
         }
 
-        unsafe public void WriteUInt64 (ulong val)
+        public void WriteUInt32 (uint val)
         {
-            MarshalULong (&val);
+            MarshalTo(val, BitConverter.GetBytes);
         }
 
-        unsafe public void WriteSingle (float val)
+        public void WriteInt64 (long val)
         {
-            MarshalUInt (&val);
+            MarshalTo(val, BitConverter.GetBytes);
         }
 
-        unsafe public void WriteDouble (double val)
+        public void WriteUInt64 (ulong val)
         {
-            MarshalULong (&val);
+            MarshalTo(val, BitConverter.GetBytes);
+        }
+
+        public void WriteSingle (float val)
+        {
+            MarshalTo(val, BitConverter.GetBytes);
+        }
+
+        public void WriteDouble (double val)
+        {
+            MarshalTo(val, BitConverter.GetBytes);
         }
 
         public void WriteString (string val)
@@ -178,125 +231,21 @@ namespace Tmds.DBus.Protocol
             WriteNull ();
         }
 
-        public void WriteSafeHandle(SafeHandle handle)
+        void MarshalTo<T>(T val, Func<T, byte[]> converter)
+         where T : struct
         {
-            if (fds == null)
-            {
-                fds = new List<UnixFd>();
-            }
-            fds.Add(new UnixFd(handle));
-            WriteInt32(fds.Count - 1);
+            int count = Marshal.SizeOf<T>();
+            WritePad(count);
+            var bytes = converter(val);
+            if (endianness != Environment.NativeEndianness)
+                Array.Reverse(bytes);
+            stream.Write(bytes, 0, count);
         }
 
-        public void Write(Type type, object val, bool isCompileTimeType)
+        public void WriteObject(Type type, object val)
         {
-            if (type.GetTypeInfo().IsEnum)
-            {
-                type = Enum.GetUnderlyingType(type);
-            }
-
-            if (type == typeof(bool))
-            {
-                WriteBoolean((bool)val);
-                return;
-            }
-            else if (type == typeof(byte))
-            {
-                WriteByte((byte)val);
-                return;
-            }
-            else if (type == typeof(double))
-            {
-                WriteDouble((double)val);
-                return;
-            }
-            else if (type == typeof(short))
-            {
-                WriteInt16((short)val);
-                return;
-            }
-            else if (type == typeof(int))
-            {
-                WriteInt32((int)val);
-                return;
-            }
-            else if (type == typeof(long))
-            {
-                WriteInt64((long)val);
-                return;
-            }
-            else if (type == typeof(ObjectPath))
-            {
-                WriteObjectPath((ObjectPath)val);
-                return;
-            }
-            else if (type == typeof(Signature))
-            {
-                WriteSignature((Signature)val);
-                return;
-            }
-            else if (type == typeof(string))
-            {
-                WriteString((string)val);
-                return;
-            }
-            else if (type == typeof(float))
-            {
-                WriteSingle((float)val);
-                return;
-            }
-            else if (type == typeof(ushort))
-            {
-                WriteUInt16((ushort)val);
-                return;
-            }
-            else if (type == typeof(uint))
-            {
-                WriteUInt32((uint)val);
-                return;
-            }
-            else if (type == typeof(ulong))
-            {
-                WriteUInt64((ulong)val);
-                return;
-            }
-            else if (type == typeof(object))
-            {
-                WriteVariant(val);
-                return;
-            }
-            else if (type == typeof(IDBusObject))
-            {
-                WriteBusObject((IDBusObject)val);
-                return;
-            }
-
-            if (ArgTypeInspector.IsDBusObjectType(type, isCompileTimeType))
-            {
-                WriteBusObject((IDBusObject)val);
-                return;
-            }
-
-            if (ArgTypeInspector.IsSafeHandleType(type))
-            {
-                WriteSafeHandle((SafeHandle)val);
-                return;
-            }
-
-            MethodInfo method = WriteMethodFactory.CreateWriteMethodForType(type, isCompileTimeType);
-
-            if (method.IsStatic)
-            {
-                method.Invoke(null, new object[] { this, val });
-            }
-            else
-            {
-                method.Invoke(this, new object[] { val });
-            }
-        }
-
-        private void WriteObject (Type type, object val)
-        {
+            throw new NotImplementedException();
+#if false
             ObjectPath path;
 
             DBusObjectProxy bobj = val as DBusObjectProxy;
@@ -307,6 +256,7 @@ namespace Tmds.DBus.Protocol
             path = bobj.ObjectPath;
 
             WriteObjectPath (path);
+#endif
         }
 
         public void WriteBusObject(IDBusObject busObject)
@@ -314,165 +264,134 @@ namespace Tmds.DBus.Protocol
             WriteObjectPath(busObject.ObjectPath);
         }
 
-        public void WriteVariant (object val)
+        public void WriteVariant(object val)
         {
             if (val == null)
-                throw new NotSupportedException ("Cannot send null variant");
-
-            Type type = val.GetType ();
-
-            if (type == typeof(object))
             {
-                throw new ArgumentException($"Cannot (de)serialize Type '{type.FullName}'");
+                //throw new NotSupportedException("Cannot send null variant");
+                val = new object[0];
             }
 
-            Signature sig = Signature.GetSig(type, isCompileTimeType: false);
+            var type = val.GetType();
+            if (type == typeof(object))
+                throw new ArgumentException($"Cannot (de)serialize Type '{type.FullName}'");
 
+            var sig = Signature.GetSig(type);
             WriteSignature(sig);
-            Write(type, val, isCompileTimeType: false);
+            Write(type, val);
         }
 
-        public void WriteArray<T> (IEnumerable<T> val)
+        public void WriteArray<T>(IEnumerable<T> val)
         {
-            Type elemType = typeof (T);
+            var elemType = typeof(T);
 
             var byteArray = val as byte[];
-            if (byteArray != null) {
+            if (byteArray != null)
+            {
                 int valLength = val.Count();
                 if (byteArray.Length > ProtocolInformation.MaxArrayLength)
-                    ThrowArrayLengthException ((uint)byteArray.Length);
+                    ThrowArrayLengthException((uint)byteArray.Length);
 
-                WriteUInt32 ((uint)byteArray.Length);
-                stream.Write (byteArray, 0, byteArray.Length);
+                WriteUInt32((uint)byteArray.Length);
+                stream.Write(byteArray, 0, byteArray.Length);
                 return;
             }
 
             if (elemType.GetTypeInfo().IsEnum)
-                elemType = Enum.GetUnderlyingType (elemType);
+                elemType = Enum.GetUnderlyingType(elemType);
 
-            Signature sigElem = Signature.GetSig (elemType, isCompileTimeType: true);
+            Signature sigElem = Signature.GetSig(elemType);
             int fixedSize = 0;
 
             if (endianness == Environment.NativeEndianness && elemType.GetTypeInfo().IsValueType && !sigElem.IsStruct && elemType != typeof(bool) &&
-                sigElem.GetFixedSize (ref fixedSize) && val is Array) {
+                sigElem.GetFixedSize(ref fixedSize) && val is Array)
+            {
                 var array = val as Array;
                 int byteLength = fixedSize * array.Length;
                 if (byteLength > ProtocolInformation.MaxArrayLength)
-                    ThrowArrayLengthException ((uint)byteLength);
+                    ThrowArrayLengthException((uint)byteLength);
 
-                WriteUInt32 ((uint)byteLength);
-                WritePad (sigElem.Alignment);
+                WriteUInt32((uint)byteLength);
+                WritePad(sigElem.Alignment);
 
                 byte[] data = new byte[byteLength];
-                Buffer.BlockCopy (array, 0, data, 0, data.Length);
-                stream.Write (data, 0, data.Length);
+                Buffer.BlockCopy(array, 0, data, 0, data.Length);
+                stream.Write(data, 0, data.Length);
 
                 return;
             }
 
             long origPos = stream.Position;
-            WriteUInt32 ((uint)0);
+            WriteUInt32((uint)0);
 
-            WritePad (sigElem.Alignment);
+            WritePad(sigElem.Alignment);
 
             long startPos = stream.Position;
 
-            var tWriter = WriteMethodFactory.CreateWriteMethodDelegate<T>();
+            var tWriter = WriterForType<T>();
 
             foreach (T elem in val)
-                tWriter (this, elem);
+                tWriter(this, elem);
 
             long endPos = stream.Position;
             uint ln = (uint)(endPos - startPos);
             stream.Position = origPos;
 
             if (ln > ProtocolInformation.MaxArrayLength)
-                ThrowArrayLengthException (ln);
+                ThrowArrayLengthException(ln);
 
-            WriteUInt32 (ln);
+            WriteUInt32(ln);
             stream.Position = endPos;
         }
 
-        internal static void ThrowArrayLengthException (uint ln)
+        public void WriteStructure<T>(T value)
         {
-            throw new ProtocolException("Array length " + ln.ToString () + " exceeds maximum allowed " + ProtocolInformation.MaxArrayLength + " bytes");
-        }
+            FieldInfo[] fis = ArgTypeInspector.GetStructFields(typeof(T));
 
-        public void WriteStructure<T> (T value)
-        {
-            
-            if (!_skipNextStructPadding)
-            {
-                WritePad (8);
-            }
-            _skipNextStructPadding = false;
-
-            FieldInfo[] fis = ArgTypeInspector.GetStructFields(typeof(T), isValueTuple: false);
             if (fis.Length == 0)
                 return;
 
+            if (!_skipNextStructPadding)
+            {
+                WritePad(8);
+            }
+            _skipNextStructPadding = false;
+
             object boxed = value;
 
-            if (MessageReader.IsEligibleStruct (typeof (T), fis)) {
-                byte[] buffer = new byte[Marshal.SizeOf (fis[0].FieldType) * fis.Length];
+            if (MessageReader.IsEligibleStruct(typeof(T), fis))
+            {
+                byte[] buffer = new byte[Marshal.SizeOf(fis[0].FieldType) * fis.Length];
 
-                unsafe {
-                    GCHandle valueHandle = GCHandle.Alloc (boxed, GCHandleType.Pinned);
-                    Marshal.Copy (valueHandle.AddrOfPinnedObject (), buffer, 0, buffer.Length);
-                    valueHandle.Free ();
-                }
-                stream.Write (buffer, 0, buffer.Length);
+                //unsafe {
+                GCHandle valueHandle = GCHandle.Alloc(boxed, GCHandleType.Pinned);
+                Marshal.Copy(valueHandle.AddrOfPinnedObject(), buffer, 0, buffer.Length);
+                valueHandle.Free();
+                //}
+                stream.Write(buffer, 0, buffer.Length);
                 return;
             }
 
             foreach (var fi in fis)
-                Write (fi.FieldType, fi.GetValue (boxed), isCompileTimeType: true);
+                Write(fi.FieldType, fi.GetValue(boxed));
         }
 
-        public void WriteValueTupleStructure<T> (T value)
-        {
-            if (!_skipNextStructPadding)
-            {
-                WritePad (8);
-            }
-            _skipNextStructPadding = false;
-            FieldInfo[] fis = ArgTypeInspector.GetStructFields(typeof(T), isValueTuple: true);
-            if (fis.Length == 0)
-                return;
-
-            object boxed = value;
-            for (int i = 0; i < fis.Length;)
-            {
-                var fi = fis[i];
-                if (i == 7)
-                {
-                    boxed = fi.GetValue (boxed);
-                    fis = ArgTypeInspector.GetStructFields(fi.FieldType, isValueTuple: true);
-                    i = 0;
-                }
-                else
-                {
-                    Write (fi.FieldType, fi.GetValue (boxed), isCompileTimeType: true);
-                    i++;
-                }
-            }
-        }
-
-        public void WriteFromDict<TKey,TValue> (IEnumerable<KeyValuePair<TKey,TValue>> val)
+        public void WriteFromDict<TKey, TValue>(IEnumerable<KeyValuePair<TKey, TValue>> val)
         {
             long origPos = stream.Position;
             // Pre-write array length field, we overwrite it at the end with the correct value
-            WriteUInt32 ((uint)0);
-            WritePad (8);
+            WriteUInt32((uint)0);
+            WritePad(8);
             long startPos = stream.Position;
 
-            var keyWriter = WriteMethodFactory.CreateWriteMethodDelegate<TKey>();
-            var valueWriter = WriteMethodFactory.CreateWriteMethodDelegate<TValue>();
+            var keyWriter = WriterForType<TKey>();
+            var valueWriter = WriterForType<TValue>();
 
-            foreach (KeyValuePair<TKey,TValue> entry in val) {
-                WritePad (8);
-                keyWriter (this, entry.Key);
-                valueWriter (this, entry.Value);
+            foreach (KeyValuePair<TKey, TValue> entry in val)
+            {
+                WritePad(8);
+                keyWriter(this, entry.Key);
+                valueWriter(this, entry.Value);
             }
 
             long endPos = stream.Position;
@@ -482,38 +401,34 @@ namespace Tmds.DBus.Protocol
             if (ln > ProtocolInformation.MaxArrayLength)
                 throw new ProtocolException("Dict length " + ln + " exceeds maximum allowed " + ProtocolInformation.MaxArrayLength + " bytes");
 
-            WriteUInt32 (ln);
+            WriteUInt32(ln);
             stream.Position = endPos;
         }
 
         public void WriteDictionaryObject<T>(T val)
         {
             var type = typeof(T);
-            FieldInfo[] fis = type.GetFields (BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+            FieldInfo[] fis = type.GetFields(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
 
             long origPos = stream.Position;
             // Pre-write array length field, we overwrite it at the end with the correct value
-            WriteUInt32 ((uint)0);
-            WritePad (8);
+            WriteUInt32((uint)0);
+            WritePad(8);
             long startPos = stream.Position;
 
             foreach (var fi in fis)
             {
                 object fieldVal = fi.GetValue(val);
                 if (fieldVal == null)
-                {
                     continue;
-                }
 
-                Type fieldType;
-                string fieldName;
-                PropertyTypeInspector.InspectField(fi, out fieldName, out fieldType);
-                Signature sig = Signature.GetSig(fieldType, isCompileTimeType: true);
+                PropertyTypeInspector.InspectField(fi, out string fieldName, out Type fieldType);
+                Signature sig = Signature.GetSig(fieldType);
 
-                WritePad (8);
+                WritePad(8);
                 WriteString(fieldName);
                 WriteSignature(sig);
-                Write(fieldType, fieldVal, isCompileTimeType: true);
+                Write(fieldType, fieldVal);
             }
 
             long endPos = stream.Position;
@@ -523,7 +438,7 @@ namespace Tmds.DBus.Protocol
             if (ln > ProtocolInformation.MaxArrayLength)
                 throw new ProtocolException("Dict length " + ln + " exceeds maximum allowed " + ProtocolInformation.MaxArrayLength + " bytes");
 
-            WriteUInt32 (ln);
+            WriteUInt32(ln);
             stream.Position = endPos;
         }
 
@@ -542,22 +457,24 @@ namespace Tmds.DBus.Protocol
         internal void WriteHeaderFields(IEnumerable<KeyValuePair<FieldCode, object>> val)
         {
             long origPos = stream.Position;
-            WriteUInt32 ((uint)0);
+            WriteUInt32((uint)0);
 
-            WritePad (8);
+            WritePad(8);
 
             long startPos = stream.Position;
 
-            foreach (KeyValuePair<FieldCode, object> entry in val) {
-                WritePad (8);
-                WriteByte ((byte)entry.Key);
-                switch (entry.Key) {
+            foreach (KeyValuePair<FieldCode, object> entry in val)
+            {
+                WritePad(8);
+                WriteByte((byte)entry.Key);
+                switch (entry.Key)
+                {
                     case FieldCode.Destination:
                     case FieldCode.ErrorName:
                     case FieldCode.Interface:
                     case FieldCode.Member:
                     case FieldCode.Sender:
-                        WriteSignature (Signature.StringSig);
+                        WriteSignature(Signature.StringSig);
                         WriteString((string)entry.Value);
                         break;
                     case FieldCode.Path:
@@ -574,7 +491,7 @@ namespace Tmds.DBus.Protocol
                         WriteSignature((Signature)entry.Value);
                         break;
                     default:
-                        WriteVariant (entry.Value);
+                        WriteVariant(entry.Value);
                         break;
                 }
             }
@@ -586,23 +503,31 @@ namespace Tmds.DBus.Protocol
             if (ln > ProtocolInformation.MaxArrayLength)
                 throw new ProtocolException("Dict length " + ln + " exceeds maximum allowed " + ProtocolInformation.MaxArrayLength + " bytes");
 
-            WriteUInt32 (ln);
+            WriteUInt32(ln);
             stream.Position = endPos;
         }
 
-        private void WriteNull ()
+        private void WriteNull()
         {
-            stream.WriteByte (0);
+            stream.WriteByte(0);
         }
 
         // Source buffer for zero-padding
         static readonly byte[] nullBytes = new byte[8];
-        private void WritePad (int alignment)
+        private void WritePad(int alignment)
         {
-            int needed = ProtocolInformation.PadNeeded ((int)stream.Position, alignment);
+            int needed = ProtocolInformation.PadNeeded((int)stream.Position, alignment);
             if (needed == 0)
                 return;
-            stream.Write (nullBytes, 0, needed);
+            stream.Write(nullBytes, 0, needed);
         }
+#endregion
+
+        internal static void ThrowArrayLengthException(uint ln)
+        {
+            throw new ProtocolException("Array length " + ln.ToString () + " exceeds maximum allowed " + ProtocolInformation.MaxArrayLength + " bytes");
+        }
+
+        
     }
 }

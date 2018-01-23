@@ -95,9 +95,11 @@ namespace Tmds.DBus.Transports
             _receiveData.Completed += ReadCompleted;
             _receiveData.UserToken = new ReadContext();
 
-            _sendArgs = new SocketAsyncEventArgs();
-            _sendArgs.BufferList = new List<ArraySegment<byte>>();
-            _sendArgs.UserToken = new SendContext();
+            _sendArgs = new SocketAsyncEventArgs
+            {
+                BufferList = new List<ArraySegment<byte>>(),
+                UserToken = new SendContext()
+            };
             _sendArgs.Completed += SendCompleted;
         }
 
@@ -170,13 +172,17 @@ namespace Tmds.DBus.Transports
             {
                 do
                 {
-                    IOVector iov = new IOVector ();
-                    iov.Base = buf + offset;
-                    iov.Length = (SizeT)count;
-                    
-                    msghdr msg = new msghdr ();
-                    msg.msg_iov = &iov;
-                    msg.msg_iovlen = (SizeT)1;
+                    IOVector iov = new IOVector
+                    {
+                        Base = buf + offset,
+                        Length = (SizeT)count
+                    };
+
+                    msghdr msg = new msghdr
+                    {
+                        msg_iov = &iov,
+                        msg_iovlen = (SizeT)1
+                    };
 
                     cmsg_fd cm = new cmsg_fd ();
                     msg.msg_control = &cm;
@@ -186,9 +192,7 @@ namespace Tmds.DBus.Transports
                     lock (_gate)
                     {
                         if (_socketFd == -1)
-                        {
                             return -EBADF;
-                        }
                         rv = (int)Interop.recvmsg(_socketFd, new IntPtr(&msg), 0);
                     }
                     if (rv >= 0)
@@ -197,9 +201,7 @@ namespace Tmds.DBus.Transports
                         {
                             int msgFdCount = ((int)cm.hdr.cmsg_len - sizeof(cmsghdr)) / sizeof(int);
                             for (int i = 0; i < msgFdCount; i++)
-                            {
                                 fileDescriptors.Add(new UnixFd(cm.fds[i]));
-                            }
                         }
                         return rv;
                     }
@@ -207,9 +209,7 @@ namespace Tmds.DBus.Transports
                     {
                         var errno = Marshal.GetLastWin32Error();
                         if (errno != EINTR)
-                        {
                             return -errno;
-                        }
                     }
                 } while (true);
             }
@@ -221,23 +221,18 @@ namespace Tmds.DBus.Transports
             {
                 var readContext = _receiveData.UserToken as ReadContext;
                 readContext.Tcs = readContext.Tcs ?? new TaskCompletionSource<int>();
+                var retTask = readContext.Tcs.Task;
                 _receiveData.SetBuffer(buffer, offset, count);
                 readContext.FileDescriptors = fileDescriptors;
                 if (!_socket.ReceiveAsync(_receiveData))
                 {
                     if (_receiveData.SocketError == SocketError.Success)
-                    {
                         return Task.FromResult(_receiveData.BytesTransferred);
-                    }
                     else
-                    {
                         return Task.FromException<int>(new SocketException((int)_receiveData.SocketError));
-                    }
                 }
                 else
-                {
-                    return readContext.Tcs.Task;
-                }
+                    return retTask;
             }
             else
             {
@@ -249,30 +244,23 @@ namespace Tmds.DBus.Transports
                 readContext.FileDescriptors = fileDescriptors;
                 while (true)
                 {
+                    var retTask = readContext.Tcs.Task;
                     if (!_socket.ReceiveAsync(_waitForData))
                     {
                         int rv = DoRead(buffer, offset, count, fileDescriptors);
                         if (rv >= 0)
-                        {
                             return Task.FromResult(rv);
-                        }
                         else
                         {
                             int errno = -rv;
                             if (errno == EAGAIN)
-                            {
                                 continue;
-                            }
                             else
-                            {
                                 return Task.FromException<int>(CreateExceptionForErrno(errno));
-                            }
                         }
                     }
                     else
-                    {
-                        return readContext.Tcs.Task;
-                    }
+                        return retTask;
                 }
             }
         }
@@ -282,26 +270,20 @@ namespace Tmds.DBus.Transports
             if (!_supportsFdPassing && message.Header.NumberOfFds > 0)
             {
                 foreach (var unixFd in message.UnixFds)
-                {
                     unixFd.SafeHandle.Dispose();
-                }
                 message.Header.NumberOfFds = 0;
                 message.UnixFds = null;
             }
 
             if (message.UnixFds != null && message.UnixFds.Length > 0)
-            {
                 return SendMessageWithFdsAsync(message);
-            }
             else
             {
                 _bufferList.Clear();
                 var headerBytes = message.Header.ToArray();
                 _bufferList.Add(new ArraySegment<byte>(headerBytes, 0, headerBytes.Length));
                 if (message.Body != null)
-                {
                     _bufferList.Add(new ArraySegment<byte>(message.Body, 0, message.Body.Length));
-                }
                 return SendBufferListAsync(_bufferList);
             }
         }
@@ -315,27 +297,19 @@ namespace Tmds.DBus.Transports
                 lock (_gate)
                 {
                     if (_socketFd == -1)
-                    {
                         throw new ObjectDisposedException(typeof(Socket).FullName);
-                    }
                     rv = Interop.sendmsg(_socketFd, new IntPtr(msg), 0);
                 }
                 if (rv == new IntPtr(length))
-                {
                     return length;
-                }
                 if (rv == new IntPtr(-1))
                 {
                     var errno = Marshal.GetLastWin32Error();
                     if (errno != EINTR)
-                    {
                         return -errno;
-                    }
                 }
                 else
-                {
                     return -EAGAIN;
-                }
             } while (true);
         }
 
@@ -403,21 +377,16 @@ namespace Tmds.DBus.Transports
             var sendContext = _sendArgs.UserToken as SendContext;
             sendContext.Tcs = sendContext.Tcs ?? new TaskCompletionSource<object>();
             _sendArgs.BufferList = bufferList;
+            var retTask = sendContext.Tcs.Task;
             if (!_socket.SendAsync(_sendArgs))
             {
                 if (_sendArgs.SocketError == SocketError.Success)
-                {
                     return Task.CompletedTask;
-                }
                 else
-                {
                     return Task.FromException(new SocketException((int)_sendArgs.SocketError));
-                }
             }
             else
-            {
-                return sendContext.Tcs.Task;
-            }
+                return retTask;
         }
 
         private void SendCompleted(object sender, SocketAsyncEventArgs e)
@@ -426,13 +395,9 @@ namespace Tmds.DBus.Transports
             var tcs = sendContext.Tcs;
             sendContext.Tcs = null;
             if (e.SocketError == SocketError.Success)
-            {
                 tcs.SetResult(null);
-            }
             else
-            {
                 tcs.SetException(new SocketException((int)e.SocketError));
-            }
         }
 
         private static int GetFd(Socket socket)

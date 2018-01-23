@@ -7,10 +7,11 @@ using System;
 using System.IO;
 using System.Runtime.InteropServices;
 using Tmds.DBus.Protocol;
+using Tmds.DBus.Transports;
 
 namespace Tmds.DBus
 {
-    internal static class Environment
+    public static class Environment
     {
         private const string MachineUuidPath = @"/var/lib/dbus/machine-id";
 
@@ -28,17 +29,12 @@ namespace Tmds.DBus
         {
             get
             {
-                if (_machineId != null)
+                if (_machineId == null)
                 {
-                    return _machineId;
-                }
-                if (File.Exists(MachineUuidPath))
-                {
-                    _machineId = Guid.Parse(File.ReadAllText(MachineUuidPath).Substring(0, 32)).ToString();
-                }
-                else
-                {
-                    _machineId = Guid.Empty.ToString();
+                    if (File.Exists(MachineUuidPath))
+                        _machineId = Guid.Parse(File.ReadAllText(MachineUuidPath).Substring(0, 32)).ToString();
+                    else
+                        _machineId = Guid.Empty.ToString();
                 }
                 return _machineId;
             }
@@ -49,20 +45,11 @@ namespace Tmds.DBus
         {
             get
             {
-                if (_uid != null)
+                if (_uid == null)
                 {
-                    return _uid;
+                    _uid = IsWindows ? System.Security.Principal.WindowsIdentity.GetCurrent().User.Value
+                        : Interop.geteuid().ToString();
                 }
-
-                if (Environment.IsWindows)
-                {
-                    _uid = System.Security.Principal.WindowsIdentity.GetCurrent().User.Value;
-                }
-                else
-                {
-                    _uid = Interop.geteuid().ToString();
-                }
-
                 return _uid;
             }
         }

@@ -13,36 +13,31 @@ namespace Tmds.DBus.Tests
         {
             _properties = properties;
         }
-        public ObjectPath ObjectPath
-        {
-            get
-            {
-                return Path;
-            }
-        }
+        public ObjectPath ObjectPath => Path;
 
-        public event Action<PropertyChanges> OnPropertiesChanged;
+        Action<(string name, object value)> propChangeCallback;
 
-        public Task<IDictionary<string, object>> GetAllAsync()
+        public Task<IDictionary<string, object>> GetAll()
         {
             return Task.FromResult(_properties);
         }
 
-        public Task<object> GetAsync(string prop)
+        public Task<object> Get(string prop)
         {
             return Task.FromResult(_properties[prop]);
         }
 
-        public Task SetAsync(string prop, object val)
+        public Task Set(string prop, object val)
         {
             _properties[prop] = val;
-            OnPropertiesChanged?.Invoke(PropertyChanges.ForProperty(prop, val));
+            propChangeCallback?.Invoke((prop, val));
             return Task.CompletedTask;
         }
 
-        public Task<IDisposable> WatchPropertiesAsync(Action<PropertyChanges> handler)
+        public Task<IDisposable> WatchProperties(Action<(string name, object value)> handler)
         {
-            return SignalWatcher.AddAsync(this, nameof(OnPropertiesChanged), handler);
+            propChangeCallback = handler;
+            return null;
         }
     }
 }

@@ -13,6 +13,9 @@ namespace Tmds.DBus.Tests
         [SkippableTheory]
         public async Task Transport(DBusDaemonProtocol protocol)
         {
+            if (!File.Exists("dbus-daemon"))
+                throw new SkipTestException("dbus-daemon not present");
+
             if (DBusDaemon.IsSELinux && protocol == DBusDaemonProtocol.Tcp)
             {
                 throw new SkipTestException("Cannot provide SELinux context to DBus daemon over TCP");
@@ -21,16 +24,19 @@ namespace Tmds.DBus.Tests
             {
                 await dbusDaemon.StartAsync(protocol);
                 var connection = new Connection(dbusDaemon.Address);
-                var connectionInfo = await connection.ConnectAsync();
+                await connection.ConnectAsync();
 
-                Assert.StartsWith(":", connectionInfo.LocalName);
-                Assert.Equal(true, connectionInfo.RemoteIsBus);
+                Assert.StartsWith(":", connection.LocalName);
+                Assert.Equal(true, connection.RemoteIsBus);
             }
         }
 
-        [Fact]
+        [SkippableFact]
         public async Task TryMultipleAddresses()
         {
+            if (!File.Exists("dbus-daemon"))
+                throw new SkipTestException("dbus-daemon not present");
+
             using (var dbusDaemon = new DBusDaemon())
             {
                 await dbusDaemon.StartAsync();
@@ -39,10 +45,10 @@ namespace Tmds.DBus.Tests
                                  + dbusDaemon.Address;
 
                 var connection = new Connection(address);
-                var connectionInfo = await connection.ConnectAsync();
+                await connection.ConnectAsync();
 
-                Assert.StartsWith(":", connectionInfo.LocalName);
-                Assert.Equal(true, connectionInfo.RemoteIsBus);
+                Assert.StartsWith(":", connection.LocalName);
+                Assert.Equal(true, connection.RemoteIsBus);
             }
         }
     }

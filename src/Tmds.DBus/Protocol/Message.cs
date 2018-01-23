@@ -5,9 +5,13 @@
 
 namespace Tmds.DBus.Protocol
 {
-    internal class Message
+    public class Message
     {
-        public Message(Header header, byte[] body, UnixFd[] unixFds)
+        private Header _header;
+        private byte[] _body;
+        private UnixFd[] _fds;
+
+        public Message(Header header, byte[] body = null, UnixFd[] unixFds = null)
         {
             _header = header;
             _body = body;
@@ -16,9 +20,27 @@ namespace Tmds.DBus.Protocol
             _header.NumberOfFds = (uint)(_fds?.Length ?? 0);
         }
 
-        private Header _header;
-        private byte[] _body;
-        private UnixFd[] _fds;
+        public byte[] Body
+        {
+            get => _body;
+            set
+            {
+                _body = value;
+                if (_header != null)
+                    _header.Length = _body != null ? (uint)_body.Length : 0;
+            }
+        }
+
+        public Header Header
+        {
+            get => _header;
+            set
+            {
+                _header = value;
+                if ((_body != null) && (_header != null))
+                    _header.Length = (uint)_body.Length;
+            }
+        }
 
         public UnixFd[] UnixFds
         {
@@ -26,8 +48,5 @@ namespace Tmds.DBus.Protocol
             set => _fds = value;
         }
 
-        public byte[] Body => _body;
-
-        public Header Header => _header;
     }
 }

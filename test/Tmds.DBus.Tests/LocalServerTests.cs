@@ -2,6 +2,7 @@ using System;
 using System.IO;
 using System.Threading.Tasks;
 using Xunit;
+using XunitSkip;
 
 namespace Tmds.DBus.Tests
 {
@@ -10,9 +11,11 @@ namespace Tmds.DBus.Tests
         [InlineData(DBusDaemonProtocol.Tcp)]
         [InlineData(DBusDaemonProtocol.Unix)]
         [InlineData(DBusDaemonProtocol.UnixAbstract)]
-        [Theory]
+        [SkippableTheory]
         public async Task LocalServer(DBusDaemonProtocol protocol)
         {
+            if (!File.Exists("dbus-daemon"))
+                throw new SkipTestException("dbus-daemon not present");
             string service = "any.service";
             string listenAddress = null;
             switch (protocol)
@@ -28,6 +31,8 @@ namespace Tmds.DBus.Tests
                     break;
             }
 
+            throw new NotImplementedException();
+#if false
             // server
             var server = new ServerConnectionOptions();
             using (var connection = new Connection(server))
@@ -55,6 +60,7 @@ namespace Tmds.DBus.Tests
                     }
                 }
             }
+#endif
         }
     }
 }

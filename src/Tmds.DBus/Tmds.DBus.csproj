@@ -1,25 +1,23 @@
 <Project Sdk="Microsoft.NET.Sdk">
+
   <PropertyGroup>
-    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
-    <GenerateDocumentationFile>true</GenerateDocumentationFile>
-    <Description>Tmds.DBus Library</Description>
-    <VersionPrefix>0.6.0</VersionPrefix>
-    <Authors>Tom Deseyn</Authors>
-    <TargetFramework>netstandard1.5</TargetFramework>
-    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
-    <PackageTags>dbus</PackageTags>
-    <RepositoryType>git</RepositoryType>
-    <RepositoryUrl>https://github.com/tmds/Tmds.DBus</RepositoryUrl>
-    <PackageLicenseUrl>https://raw.githubusercontent.com/tmds/Tmds.DBus/master/COPYING</PackageLicenseUrl>
-    <Copyright>Tom Deseyn;Alp Toker</Copyright>
+    <TargetFrameworks>net47;netstandard2.0</TargetFrameworks>
   </PropertyGroup>
+
+  <PropertyGroup>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+
   <ItemGroup>
-    <PackageReference Include="System.IO.MemoryMappedFiles" Version="4.3.0" />
-    <PackageReference Include="System.Reflection.Emit" Version="4.3.0" />
-    <PackageReference Include="System.Reflection.TypeExtensions" Version="4.3.0" />
-    <PackageReference Include="System.ValueTuple" Version="4.3.0" />
-    <PackageReference Include="System.Security.Principal" Version="4.3.0" />
+    <PackageReference Include="Castle.Core" Version="4.2.1" />
     <PackageReference Include="System.Net.NameResolution" Version="4.3.0" />
-    <PackageReference Include="System.Security.Principal.Windows" Version="4.3.0" />
+    <PackageReference Include="System.Security.Principal" Version="4.3.0" />
+    <PackageReference Include="System.Security.Principal.Windows" Version="4.4.1" />
+    <PackageReference Include="robertturner.BaseLibs" Version="0.1.7" />
   </ItemGroup>
+  <ItemGroup Condition="'$(TargetFramework)'=='net47'">
+    <PackageReference Include="System.Runtime.InteropServices.RuntimeInformation" Version="4.3.0" />
+    <PackageReference Include="System.Net.Sockets" Version="4.3.0" />
+  </ItemGroup>
+
 </Project>

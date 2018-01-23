@@ -6,19 +6,27 @@ using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
-using System.Net;
-using System.Net.Sockets;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
-using Tmds.DBus.Protocol;
 using Tmds.DBus.Transports;
+using Tmds.DBus.Protocol;
+using Tmds.DBus.Objects;
+using System.Linq;
+using Tmds.DBus.Objects.DBus;
+using BaseLibs.Collections;
+using Tmds.DBus.Objects.Internal;
 
 namespace Tmds.DBus
 {
-    class DBusConnection
+    public class DBusConnection : IDBusConnection
     {
-        private class SignalHandlerRegistration : IDisposable
+        struct PendingSend
+        {
+            public Message Message;
+            public TaskCompletionSource<bool> CompletionSource;
+        }
+        class SignalHandlerRegistration : IDisposable
         {
             public SignalHandlerRegistration(DBusConnection dbusConnection, SignalMatchRule rule, SignalHandler handler)
             {
@@ -26,57 +34,87 @@ namespace Tmds.DBus
                 _rule = rule;
                 _handler = handler;
             }
-
             public void Dispose()
             {
                 _connection.RemoveSignalHandler(_rule, _handler);
             }
-
-            private DBusConnection _connection;
-            private SignalMatchRule _rule;
-            private SignalHandler _handler;
+            DBusConnection _connection;
+            SignalMatchRule _rule;
+            SignalHandler _handler;
         }
-
-        private class NameOwnerWatcherRegistration : IDisposable
+        class SignalMatchRule
         {
-            public NameOwnerWatcherRegistration(DBusConnection dbusConnection, string key, OwnerChangedMatchRule rule, Action<ServiceOwnerChangedEventArgs, Exception> handler)
+            public SignalMatchRule(string @interface, string member, ObjectPath? path, string sender)
             {
-                _connection = dbusConnection;
-                _rule = rule;
-                _handler = handler;
-                _key = key;
+                Interface = @interface; Member = member; Path = path; Sender = sender;
             }
 
-            public void Dispose()
+            public string Interface { get; private set; }
+            public string Member { get; private set; }
+            public ObjectPath? Path { get; private set; }
+            public string Sender { get; private set; }
+
+            public override int GetHashCode()
             {
-                _connection.RemoveNameOwnerWatcher(_key, _rule, _handler);
+                int hash = 17;
+                hash = hash * 23 + (Interface == null ? 0 : Interface.GetHashCode());
+                hash = hash * 23 + (Member == null ? 0 : Member.GetHashCode());
+                hash = hash * 23 + Path.GetHashCode();
+                hash = hash * 23 + (Sender == null ? 0 : Sender.GetHashCode());
+                return hash;
             }
 
-            private DBusConnection _connection;
-            private OwnerChangedMatchRule _rule;
-            private Action<ServiceOwnerChangedEventArgs, Exception> _handler;
-            private string _key;
-        }
+            public override bool Equals(object o)
+            {
+                var r = o as SignalMatchRule;
+                if (o == null)
+                    return false;
+                return Interface == r.Interface &&
+                    Member == r.Member &&
+                    Path == r.Path &&
+                    Sender == r.Sender;
+            }
 
-        private class ServiceNameRegistration
-        {
-            public Action OnAquire;
-            public Action OnLost;
-            public SynchronizationContext SynchronizationContext;
+            public override string ToString()
+            {
+                var sb = new StringBuilder();
+                Append(sb, "type", "signal");
+                if (Interface != null)
+                    Append(sb, "interface", Interface);
+                if (Member != null)
+                    Append(sb, "member", Member);
+                if (Path != null)
+                    Append(sb, "path", Path.Value);
+                if (Sender != null)
+                    Append(sb, "sender", Sender);
+                return sb.ToString();
+            }
+
+            protected static void Append(StringBuilder sb, string key, object value)
+            {
+                Append(sb, key, value.ToString());
+            }
+
+            static void Append(StringBuilder sb, string key, string value)
+            {
+                if (sb.Length != 0)
+                    sb.Append(',');
+                sb.Append(key);
+                sb.Append("='");
+                sb.Append(value.Replace(@"\", @"\\").Replace(@"'", @"\'"));
+                sb.Append('\'');
+            }
         }
 
         public static readonly ObjectPath DBusObjectPath = new ObjectPath("/org/freedesktop/DBus");
         public const string DBusServiceName = "org.freedesktop.DBus";
         public const string DBusInterface = "org.freedesktop.DBus";
-        private static readonly char[] s_dot = new[] { '.' };
 
-        public static async Task<DBusConnection> ConnectAsync(ClientSetupResult connectionContext, Action<Exception> onDisconnect, CancellationToken cancellationToken)
+        public static async Task<DBusConnection> ConnectAsync(ClientSetupResult connectionContext, Action<Exception> onDisconnect, CancellationToken cancellationToken, IClientObjectProvider objectProvider)
         {
             var _entries = AddressEntry.ParseEntries(connectionContext.ConnectionAddress);
             if (_entries.Length == 0)
-            {
                 throw new ArgumentException("No addresses were found", nameof(connectionContext.ConnectionAddress));
-            }
 
             Guid _serverId = Guid.Empty;
             IMessageStream stream = null;
@@ -99,337 +137,301 @@ namespace Tmds.DBus
 
                 break;
             }
-
-            return await DBusConnection.CreateAndConnectAsync(stream, onDisconnect);
+            return await CreateAndConnectAsync(stream, onDisconnect, objectProvider);
         }
 
-        private readonly IMessageStream _stream;
-        private readonly object _gate = new object();
-        private Dictionary<SignalMatchRule, SignalHandler> _signalHandlers = new Dictionary<SignalMatchRule, SignalHandler>();
-        private Dictionary<string, Action<ServiceOwnerChangedEventArgs, Exception>> _nameOwnerWatchers = new Dictionary<string, Action<ServiceOwnerChangedEventArgs, Exception>>();
-        private Dictionary<uint, TaskCompletionSource<Message>> _pendingMethods = new Dictionary<uint, TaskCompletionSource<Message>>();
-        private readonly Dictionary<ObjectPath, MethodHandler> _methodHandlers = new Dictionary<ObjectPath, MethodHandler>();
-        private readonly Dictionary<ObjectPath, string[]> _childNames = new Dictionary<ObjectPath, string[]>();
-        private readonly Dictionary<string, ServiceNameRegistration> _serviceNameRegistrations = new Dictionary<string, ServiceNameRegistration>();
-
-        private ConnectionState _state = ConnectionState.Created;
-        private bool _disposed = false;
-        private Action<Exception> _onDisconnect;
-        private Exception _disconnectReason;
-        private int _methodSerial;
-
-        public ConnectionInfo ConnectionInfo { get; private set; }
-
-        // For testing
-        internal static async Task<DBusConnection> CreateAndConnectAsync(IMessageStream stream, Action<Exception> onDisconnect = null)
+        public static async Task<DBusConnection> CreateAndConnectAsync(IMessageStream stream, Action<Exception> onDisconnect, IClientObjectProvider objectProvider, bool sayHelloToServer = true)
         {
-            var connection = new DBusConnection(stream);
-            await connection.ConnectAsync(onDisconnect);
-            return connection;
+            var dbusConnection = new DBusConnection(stream, objectProvider);
+            objectProvider.DBusConnection = dbusConnection;
+            await dbusConnection.ConnectAsync(onDisconnect, default(CancellationToken), sayHelloToServer);
+            return dbusConnection;
+        }
+        public static Task<DBusConnection> CreateAndConnectAsync(IMessageStream stream, Action<Exception> onDisconnect = null, bool sayHelloToServer = true)
+        {
+            return CreateAndConnectAsync(stream, onDisconnect, new ClientProxyManager(null), sayHelloToServer);
         }
 
-        private DBusConnection(IMessageStream stream)
+        readonly IMessageStream _stream;
+        readonly object _gate = new object();
+        readonly Dictionary<SignalMatchRule, SignalHandler> _signalHandlers = new Dictionary<SignalMatchRule, SignalHandler>();
+        Dictionary<uint, TaskCompletionSource<Message>> _pendingMethods = new Dictionary<uint, TaskCompletionSource<Message>>();
+        MethodHandlerPathPart RootPath = new MethodHandlerPathPart(null, null);
+        Dictionary<string, IMethodHandler> GlobalInterfaceHandlers = new Dictionary<string, IMethodHandler>();
+
+        public interface IMethodHandlerPathPart
+        {
+            IReadOnlyDictionary<string, IMethodHandlerPathPart> SubParts { get; }
+            IReadOnlyDictionary<string, IMethodHandler> InterfaceHandlers { get; }
+            string PathPart { get; }
+            ObjectPath Path { get; }
+        }
+
+        class MethodHandlerPathPart : IMethodHandlerPathPart
+        {
+            public MethodHandlerPathPart Parent { get; private set; }
+            public MethodHandlerPathPart(MethodHandlerPathPart parent, string pathPart)
+            {
+                Parent = parent; PathPart = pathPart;
+            }
+
+            public readonly Dictionary<string, IMethodHandler> OurInterfaceHandlers = new Dictionary<string, IMethodHandler>();
+
+            public IReadOnlyDictionary<string, MethodHandlerPathPart> OurSubParts => ourSubParts;
+
+            Dictionary<string, MethodHandlerPathPart> ourSubParts = new Dictionary<string, MethodHandlerPathPart>();
+            Dictionary<string, IMethodHandlerPathPart> externalSubParts = new Dictionary<string, IMethodHandlerPathPart>();
+            public void AddOurSubPart(string part, MethodHandlerPathPart handler)
+            {
+                ourSubParts[part] = handler;
+                UpdateSubParts();
+            }
+            public void AddExternalSubPart(string part, IMethodHandlerPathPart handler)
+            {
+                externalSubParts[part] = handler;
+                UpdateSubParts();
+            }
+            public void RemoveOurSubPart(string part)
+            {
+                ourSubParts.Remove(part);
+                UpdateSubParts();
+            }
+
+            void UpdateSubParts()
+            {
+                var subParts = ourSubParts.ToDictionary(sp => sp.Key, sp => (IMethodHandlerPathPart)sp.Value);
+                foreach (var kvp in externalSubParts)
+                    subParts[kvp.Key] = kvp.Value;
+                SubParts = subParts;
+            }
+
+            public IReadOnlyDictionary<string, IMethodHandlerPathPart> SubParts { get; private set; } = new Dictionary<string, IMethodHandlerPathPart>();
+
+            public IReadOnlyDictionary<string, IMethodHandler> InterfaceHandlers => OurInterfaceHandlers;
+
+            public string PathPart { get; private set; }
+
+            IEnumerable<string> PathSubPartsReversed()
+            {
+                var inst = this;
+                while (inst.Parent != null)
+                {
+                    yield return inst.PathPart;
+                    inst = inst.Parent;
+                }
+            }
+
+            public ObjectPath Path => new ObjectPath(PathSubPartsReversed().Reverse());
+        }
+
+        private Task<string> _localName;
+        private Action<Exception> _onDisconnect;
+        private int _methodSerial;
+        private ConcurrentQueue<PendingSend> _sendQueue;
+        private SemaphoreSlim _sendSemaphore;
+        private IClientObjectProvider _clientProvider;
+        private IDBus _dbus;
+
+        public string LocalName => _localName.Result;
+        public bool? RemoteIsBus { get; private set; }
+
+        public IDBus DBus => _dbus;
+
+        public IClientObjectProvider ProxyProvider => _clientProvider;
+
+        public bool IsDisposed => _pendingMethods == null;
+        void ThrowIfDisposed()
+        {
+            if (IsDisposed)
+                throw new ObjectDisposedException(nameof(DBusConnection));
+        }
+
+        Task TaskConnected => _localName;
+        public bool IsConnected => (TaskConnected != null) && TaskConnected.IsCompleted;
+
+        void ThrowIfNotConnected()
+        {
+            ThrowIfDisposed();
+            if (!IsConnected)
+                throw new InvalidOperationException("Not Connected");
+        }
+
+        private DBusConnection(IMessageStream stream, IClientObjectProvider clientProvider)
         {
             _stream = stream;
+            _clientProvider = clientProvider;
+            _sendQueue = new ConcurrentQueue<PendingSend>();
+            _sendSemaphore = new SemaphoreSlim(1);
         }
 
-        public DBusConnection(bool localServer)
+        public async Task ConnectAsync(Action<Exception> onDisconnect = null, CancellationToken cancellationToken = default(CancellationToken), bool sayHelloToServer = true)
         {
-            if (localServer != true)
-            {
-                throw new ArgumentException("Constructor for LocalServer.", nameof(localServer));
-            }
-            _stream = new LocalServer(this);
-            ConnectionInfo = new ConnectionInfo(string.Empty);
-        }
-
-        private async Task ConnectAsync(Action<Exception> onDisconnect)
-        {
+            ThrowIfDisposed();
             lock (_gate)
             {
-                if (_state != ConnectionState.Created)
-                {
-                    throw new InvalidOperationException("Unable to connect");
-                }
-                _state = ConnectionState.Connecting;
+                if (_dbus != null)
+                    throw new InvalidOperationException("Already connected");
+                _dbus = _clientProvider.GetInstance<IDBus>(DBusObjectPath, DBusServiceName);
             }
+            _onDisconnect = onDisconnect;
 
-            if (SynchronizationContext.Current != null)
-            {
-                SynchronizationContext.SetSynchronizationContext(null);
-                await Task.Yield();
-            }
+            ReceiveMessages(_stream, (_, e) => Dispose(e));
 
-            _onDisconnect = OnDisconnect;
+            if (sayHelloToServer)
+                _localName = _dbus.Hello();
+            else
+                _localName = Task.FromResult("");
+            RemoteIsBus = !string.IsNullOrEmpty(await _localName);
+        }
 
-            ReceiveMessages(_stream, EmitDisconnected);
-
-            string localName = await CallHelloAsync();
-            ConnectionInfo = new ConnectionInfo(localName);
-
+        void Dispose(Exception disconnectReason)
+        {
+            Dictionary<uint, TaskCompletionSource<Message>> pendingMethods = null;
             lock (_gate)
             {
-                if (_state == ConnectionState.Connecting)
+                pendingMethods = _pendingMethods;
+                if (pendingMethods == null)
+                    return;
+                _pendingMethods = null;
+                _localName = null;
+                _stream.Dispose();
+                _signalHandlers.Clear();
+                _clientProvider.Dispose();
+                foreach (var h in GlobalInterfaceHandlers)
+                    h.Value.Dispose();
+                GlobalInterfaceHandlers.Clear();
+                Action<IMethodHandlerPathPart> di = null;
+                di = mhpp =>
                 {
-                    _state = ConnectionState.Connected;
-                }
-                ThrowIfNotConnected();
-
-                _onDisconnect = onDisconnect;
+                    foreach (var mh in mhpp.InterfaceHandlers)
+                        mh.Value.Dispose();
+                    foreach (var sp in mhpp.SubParts)
+                        di(sp.Value);
+                };
+                di(RootPath);
+                RootPath.OurInterfaceHandlers.Clear();
             }
+            var e = (disconnectReason != null) ? 
+                (Exception)new DisconnectedException(disconnectReason) : 
+                new ObjectDisposedException(typeof(Connection).FullName);
+            foreach (var tcs in pendingMethods.Values)
+                tcs.SetException(e);
+            _onDisconnect?.Invoke(disconnectReason);
         }
-
-        private void OnDisconnect(Exception e)
+        public void Dispose()
         {
-            Disconnect(dispose: false, exception: e);
-        }
-
-        public Task<Message> CallMethodAsync(Message msg)
-        {
-            return CallMethodAsync(msg, checkConnected: true, checkReplyType: true);
+            Dispose(null);
         }
 
         public void EmitSignal(Message message)
         {
+            ThrowIfNotConnected();
             message.Header.Serial = GenerateSerial();
-            _stream.TrySendMessage(message);
+            SendMessageAsync(message);
         }
 
-        public void AddMethodHandlers(IEnumerable<KeyValuePair<ObjectPath, MethodHandler>> handlers)
+        public void AddMethodHandler(ObjectPath? path, string interfaceName, IMethodHandler handler)
         {
+            ThrowIfDisposed();
+            if (string.IsNullOrEmpty(interfaceName))
+                throw new ArgumentNullException(nameof(interfaceName));
+            if (handler == null)
+                throw new ArgumentNullException(nameof(handler));
             lock (_gate)
             {
-                foreach (var handler in handlers)
+                if (path.HasValue)
                 {
-                    _methodHandlers.Add(handler.Key, handler.Value);
-
-                    AddChildName(handler.Key, checkChildNames: false);
-                }
-            }
-        }
-
-        private void AddChildName(ObjectPath path, bool checkChildNames)
-        {
-            if (path == ObjectPath.Root)
-            {
-                return;
-            }
-            var parent = path.Parent;
-            var decomposed = path.Decomposed;
-            var name = decomposed[decomposed.Length - 1];
-            string[] childNames = null;
-            if (_childNames.TryGetValue(parent, out childNames) && checkChildNames)
-            {
-                for (var i = 0; i < childNames.Length; i++)
-                {
-                    if (childNames[i] == name)
+                    var pathParts = path.Value.Decomposed;
+                    MethodHandlerPathPart pathHandlers = RootPath;
+                    foreach (var part in pathParts)
                     {
-                        return;
+                        if (!pathHandlers.OurSubParts.TryGetValue(part, out MethodHandlerPathPart next))
+                        {
+                            next = new MethodHandlerPathPart(pathHandlers, part);
+                            pathHandlers.AddOurSubPart(part, next);
+                        }
+                        pathHandlers = next;
                     }
+                    pathHandlers.OurInterfaceHandlers[interfaceName] = handler;
                 }
+                else
+                    GlobalInterfaceHandlers[interfaceName] = handler;
             }
-            var newChildNames = new string[(childNames?.Length ?? 0) + 1];
-            if (childNames != null)
-            {
-                for (var i = 0; i < childNames.Length; i++)
-                {
-                    newChildNames[i] = childNames[i];
-                }
-            }
-            newChildNames[newChildNames.Length - 1] = name;
-            _childNames[parent] = newChildNames;
-
-            AddChildName(parent, checkChildNames: true);
         }
 
-        public void RemoveMethodHandlers(IEnumerable<ObjectPath> paths)
+        public IMethodHandler RemoveMethodHandler(ObjectPath? path, string interfaceName)
         {
+            ThrowIfDisposed();
+            if (string.IsNullOrEmpty(interfaceName))
+                throw new ArgumentNullException(nameof(interfaceName));
             lock (_gate)
             {
-                foreach (var path in paths)
+                if (path.HasValue)
                 {
-                    var removed = _methodHandlers.Remove(path);
-                    var hasChildren = _childNames.ContainsKey(path);
-                    if (removed && !hasChildren)
+                    var pathParts = path.Value.Decomposed;
+                    MethodHandlerPathPart pathHandlers = RootPath;
+                    foreach (var part in pathParts)
                     {
-                        RemoveChildName(path);
+                        if (!pathHandlers.OurSubParts.TryGetValue(part, out MethodHandlerPathPart next))
+                            return null;
+                        pathHandlers = next;
                     }
+                    if (!pathHandlers.OurInterfaceHandlers.TryGetValue(interfaceName, out IMethodHandler handler))
+                        return null;
+                    pathHandlers.OurInterfaceHandlers.Remove(interfaceName);
+                    // Remove any now empty path parts
+                    while (pathHandlers.Parent != null && !pathHandlers.InterfaceHandlers.Any() && !pathHandlers.SubParts.Any())
+                    {
+                        pathHandlers.Parent.RemoveOurSubPart(pathHandlers.PathPart);
+                        pathHandlers = pathHandlers.Parent;
+                    }
+                    return handler;
+                }
+                else
+                {
+                    if (!GlobalInterfaceHandlers.TryGetValue(interfaceName, out IMethodHandler handler))
+                        return null;
+                    GlobalInterfaceHandlers.Remove(interfaceName);
+                    return handler;
                 }
             }
         }
 
-        private void RemoveChildName(ObjectPath path)
+        private async void SendPendingMessages()
         {
-            if (path == ObjectPath.Root)
+            try
             {
-                return;
-            }
-            var parent = path.Parent;
-            var decomposed = path.Decomposed;
-            var name = decomposed[decomposed.Length - 1];
-            string[] childNames = _childNames[parent];
-            if (childNames.Length == 1)
-            {
-                _childNames.Remove(parent);
-                if (!_methodHandlers.ContainsKey(parent))
+                await _sendSemaphore.WaitAsync();
+                while (_sendQueue.TryDequeue(out PendingSend pendingSend))
                 {
-                    RemoveChildName(parent);
-                }
-            }
-            else
-            {
-                int writeAt = 0;
-                bool found = false;
-                var newChildNames = new string[childNames.Length - 1];
-                for (int i = 0; i < childNames.Length; i++)
-                {
-                    if (!found && childNames[i] == name)
+                    try
                     {
-                        found = true;
+                        await _stream.SendMessageAsync(pendingSend.Message);
+                        pendingSend.CompletionSource.SetResult(true);
                     }
-                    else
+                    catch (System.Exception e)
                     {
-                        newChildNames[writeAt++] = childNames[i];
+                        pendingSend.CompletionSource.SetException(e);
                     }
                 }
-                _childNames[parent] = newChildNames;
+            }
+            finally
+            {
+                _sendSemaphore.Release();
             }
         }
 
-        public async Task<IDisposable> WatchSignalAsync(ObjectPath path, string @interface, string signalName, SignalHandler handler)
+        private Task SendMessageAsync(Message message)
         {
-            SignalMatchRule rule = new SignalMatchRule()
+            var tcs = new TaskCompletionSource<bool>();
+            var pendingSend = new PendingSend()
             {
-                Interface = @interface,
-                Member = signalName,
-                Path = path
+                Message = message,
+                CompletionSource = tcs
             };
-
-            Task task = null;
-            lock (_gate)
-            {
-                ThrowIfNotConnected();
-                if (_signalHandlers.ContainsKey(rule))
-                {
-                    _signalHandlers[rule] = (SignalHandler)Delegate.Combine(_signalHandlers[rule], handler);
-                    task = Task.CompletedTask;
-                }
-                else
-                {
-                    _signalHandlers[rule] = handler;
-                    if (ConnectionInfo.RemoteIsBus)
-                    {
-                        task = CallAddMatchRuleAsync(rule.ToString());
-                    }
-                }
-            }
-            SignalHandlerRegistration registration = new SignalHandlerRegistration(this, rule, handler);
-            try
-            {
-                if (task != null)
-                {
-                    await task;
-                }
-            }
-            catch
-            {
-                registration.Dispose();
-                throw;
-            }
-            return registration;
-        }
-
-        public async Task<RequestNameReply> RequestNameAsync(string name, RequestNameOptions options, Action onAquired, Action onLost, SynchronizationContext synchronzationContext)
-        {
-            lock (_gate)
-            {
-                ThrowIfNotConnected();
-                ThrowIfRemoteIsNotBus();
-
-                if (_serviceNameRegistrations.ContainsKey(name))
-                {
-                    throw new InvalidOperationException("The name is already requested");
-                }
-                _serviceNameRegistrations[name] = new ServiceNameRegistration
-                {
-                    OnAquire = onAquired,
-                    OnLost = onLost,
-                    SynchronizationContext = synchronzationContext
-                };
-            }
-            try
-            {
-                var reply = await CallRequestNameAsync(name, options);
-                return reply;
-            }
-            catch
-            {
-                lock (_gate)
-                {
-                    _serviceNameRegistrations.Remove(name);
-                }
-                throw;
-            }
-        }
-
-        public Task<ReleaseNameReply> ReleaseNameAsync(string name)
-        {
-            lock (_gate)
-            {
-                ThrowIfRemoteIsNotBus();
-
-                if (!_serviceNameRegistrations.ContainsKey(name))
-                {
-                    return Task.FromResult(ReleaseNameReply.NotOwner);
-                }
-                _serviceNameRegistrations.Remove(name);
-
-                ThrowIfNotConnected();
-            }
-            return CallReleaseNameAsync(name);
-        }
-
-        public async Task<IDisposable> WatchNameOwnerChangedAsync(string serviceName, Action<ServiceOwnerChangedEventArgs, Exception> handler)
-        {
-            var rule = new OwnerChangedMatchRule(serviceName);
-            string key = serviceName;
-
-            Task task = null;
-            lock (_gate)
-            {
-                ThrowIfNotConnected();
-                ThrowIfRemoteIsNotBus();
-
-                if (_nameOwnerWatchers.ContainsKey(key))
-                {
-                    _nameOwnerWatchers[key] = (Action<ServiceOwnerChangedEventArgs, Exception>)Delegate.Combine(_nameOwnerWatchers[key], handler);
-                    task = Task.CompletedTask;
-                }
-                else
-                {
-                    _nameOwnerWatchers[key] = handler;
-                    task = CallAddMatchRuleAsync(rule.ToString());
-                }
-            }
-            NameOwnerWatcherRegistration registration = new NameOwnerWatcherRegistration(this, key, rule, handler);
-            try
-            {
-                await task;
-            }
-            catch
-            {
-                registration.Dispose();
-                throw;
-            }
-            return registration;
-        }
-
-        private void ThrowIfRemoteIsNotBus()
-        {
-            if (ConnectionInfo.RemoteIsBus != true)
-            {
-                throw new InvalidOperationException("The remote peer is not a bus");
-            }
+            _sendQueue.Enqueue(pendingSend);
+            SendPendingMessages();
+            return tcs.Task;
         }
 
         internal async void ReceiveMessages(IMessageStream peer, Action<IMessageStream, Exception> disconnectAction)
@@ -440,24 +442,13 @@ namespace Tmds.DBus
                 {
                     Message msg = await peer.ReceiveMessageAsync();
                     if (msg == null)
-                    {
                         throw new IOException("Connection closed by peer");
-                    }
                     HandleMessage(msg, peer);
                 }
             }
             catch (Exception e)
             {
                 disconnectAction?.Invoke(peer, e);
-            }
-        }
-
-        private void EmitDisconnected(IMessageStream peer, Exception e)
-        {
-            lock (_gate)
-            {
-                _onDisconnect?.Invoke(e);
-                _onDisconnect = null;
             }
         }
 
@@ -471,17 +462,14 @@ namespace Tmds.DBus
                 lock (_gate)
                 {
                     if (_pendingMethods?.TryGetValue(serialValue, out pending) == true)
-                    {
                         _pendingMethods.Remove(serialValue);
-                    }
                 }
                 if (pending != null)
-                {
                     pending.SetResult(msg);
-                }
                 else
                 {
-                    throw new ProtocolException("Unexpected reply message received: MessageType = '" + msg.Header.MessageType + "', ReplySerial = " + serialValue);
+                    // Drop quietly
+                    //throw new ProtocolException("Unexpected reply message received: MessageType = '" + msg.Header.MessageType + "', ReplySerial = " + serialValue);
                 }
                 return;
             }
@@ -497,10 +485,7 @@ namespace Tmds.DBus
                 case MessageType.Error:
                     string errMsg = String.Empty;
                     if (msg.Header.Signature.Value.Value.StartsWith("s"))
-                    {
-                        MessageReader reader = new MessageReader(msg, null);
-                        errMsg = reader.ReadString();
-                    }
+                        errMsg = new MessageReader(msg).ReadString();
                     throw new DBusException(msg.Header.ErrorName, errMsg);
                 case MessageType.Invalid:
                 default:
@@ -508,371 +493,161 @@ namespace Tmds.DBus
             }
         }
 
+        public async Task<IDisposable> WatchSignalAsync(SignalHandler handler, string @interface, string signalName, string sender, ObjectPath? path = null)
+        {
+            ThrowIfNotConnected();
+            if (RemoteIsBus.HasValue && RemoteIsBus.Value && sender.Trim()[0] != ':')
+                sender = await _dbus.GetNameOwner(sender);
+
+            var rule = new SignalMatchRule(
+                @interface: @interface ?? throw new ArgumentNullException(nameof(@interface)),
+                member: signalName ?? throw new ArgumentNullException(nameof(signalName)),
+                path: path,
+                sender: sender);
+
+            Task task = null;
+            lock (_gate)
+            {
+                if (_signalHandlers.TryGetValue(rule, out SignalHandler prevHandler))
+                    _signalHandlers[rule] = (SignalHandler)Delegate.Combine(prevHandler, handler);
+                else
+                {
+                    _signalHandlers[rule] = handler;
+                    if (RemoteIsBus == true)
+                        task = _dbus.AddMatch(rule.ToString());
+                }
+            }
+            var registration = new SignalHandlerRegistration(this, rule, handler);
+            try
+            {
+                if (task != null)
+                    await task;
+            }
+            catch
+            {
+                registration.Dispose();
+                throw;
+            }
+            return registration;
+        }
+
         private void HandleSignal(Message msg)
         {
-            switch (msg.Header.Interface)
-            {
-                case "org.freedesktop.DBus":
-                    switch (msg.Header.Member)
-                    {
-                        case "NameAcquired":
-                        case "NameLost":
-                        {
-                            MessageReader reader = new MessageReader(msg, null);
-                            var name = reader.ReadString();
-                            bool aquiredNotLost = msg.Header.Member == "NameAcquired";
-                            OnNameAcquiredOrLost(name, aquiredNotLost);
-                            return;
-                        }
-                        case "NameOwnerChanged":
-                        {
-                            MessageReader reader = new MessageReader(msg, null);
-                            var serviceName = reader.ReadString();
-                            if (serviceName[0] == ':')
-                            {
-                                return;
-                            }
-                            var oldOwner = reader.ReadString();
-                            oldOwner = string.IsNullOrEmpty(oldOwner) ? null : oldOwner;
-                            var newOwner = reader.ReadString();
-                            newOwner = string.IsNullOrEmpty(newOwner) ? null : newOwner;
-                            Action<ServiceOwnerChangedEventArgs, Exception> watchers = null;
-                            var splitName = serviceName.Split(s_dot);
-                            var keys = new string[splitName.Length + 2];
-                            keys[0] = ".*";
-                            var sb = new StringBuilder();
-                            for (int i = 0; i < splitName.Length; i++)
-                            {
-                                sb.Append(splitName[i]);
-                                sb.Append(".*");
-                                keys[i + 1] = sb.ToString();
-                                sb.Remove(sb.Length - 1, 1);
-                            }
-                            keys[keys.Length - 1] = serviceName;
-                            lock (_gate)
-                            {
-                                foreach (var key in keys)
-                                {
-                                    Action<ServiceOwnerChangedEventArgs, Exception> keyWatchers = null;
-                                    if (_nameOwnerWatchers?.TryGetValue(key, out keyWatchers) == true)
-                                    {
-                                        watchers += keyWatchers;
-                                    }
-                                }
-                            }
-                            watchers?.Invoke(new ServiceOwnerChangedEventArgs(serviceName, oldOwner, newOwner), null);
-                            return;
-                        }
-                        default:
-                            break;
-                    }
-                    break;
-                default:
-                    break;
-            }
-
-            SignalMatchRule rule = new SignalMatchRule()
-            {
-                Interface = msg.Header.Interface,
-                Member = msg.Header.Member,
-                Path = msg.Header.Path.Value
-            };
-
+            var sender = msg.Header.Sender ?? string.Empty;
+            var rule = new SignalMatchRule(@interface: msg.Header.Interface,
+                member: msg.Header.Member,
+                path: msg.Header.Path.Value,
+                sender: sender);
             SignalHandler signalHandler = null;
             lock (_gate)
             {
-                if (_signalHandlers?.TryGetValue(rule, out signalHandler) == true)
+                if (_signalHandlers.TryGetValue(rule, out SignalHandler handler))
+                    signalHandler = handler;
+            }
+            if (signalHandler != null)
+            {
+                try
                 {
-                    try
-                    {
-                        signalHandler(msg, null);
-                    }
-                    catch (Exception e)
-                    {
-                        throw new InvalidOperationException("Signal handler for " + msg.Header.Interface + "." + msg.Header.Member + " threw an exception", e);
-                    }
+                    signalHandler(msg);
+                }
+                catch (Exception e)
+                {
+                    throw new InvalidOperationException("Signal handler for " + msg.Header.Interface + "." + msg.Header.Member + " threw an exception", e);
                 }
             }
         }
 
-        private void OnNameAcquiredOrLost(string name, bool aquiredNotLost)
-        {
-            Action action = null;
-            SynchronizationContext synchronizationContext = null;
-            lock (_gate)
-            {
-                ServiceNameRegistration registration;
-                if (_serviceNameRegistrations.TryGetValue(name, out registration))
-                {
-                    action = aquiredNotLost ? registration.OnAquire : registration.OnLost;
-                    synchronizationContext = registration.SynchronizationContext;
-                }
-            }
-            if (action != null)
-            {
-                if (synchronizationContext != null)
-                {
-                    synchronizationContext.Post(_ => action(), null);
-                }
-                else
-                {
-                    action();
-                }
-            }
-        }
-
-        public void Dispose()
-        {
-            Disconnect(dispose: true, exception: null);
-        }
-
-        public void Disconnect(bool dispose, Exception exception)
-        {
-            Dictionary<uint, TaskCompletionSource<Message>> pendingMethods = null;
-            Dictionary<SignalMatchRule, SignalHandler> signalHandlers = null;
-            Dictionary<string, Action<ServiceOwnerChangedEventArgs, Exception>> nameOwnerWatchers = null;
-            lock (_gate)
-            {
-                if (_state == ConnectionState.Disconnected || _state == ConnectionState.Created)
-                {
-                    return;
-                }
-
-                _state = ConnectionState.Disconnected;
-                _disposed = dispose;
-                _stream.Dispose();
-                _disconnectReason = exception;
-                pendingMethods = _pendingMethods;
-                _pendingMethods = null;
-                signalHandlers = _signalHandlers;
-                _signalHandlers = null;
-                nameOwnerWatchers = _nameOwnerWatchers;
-                _nameOwnerWatchers = null;
-                _serviceNameRegistrations.Clear();
-
-                _onDisconnect = null;
-
-                Func<Exception> createException = () =>
-                    dispose ? Connection.CreateDisposedException() : new DisconnectedException(exception);
-
-                foreach (var watcher in nameOwnerWatchers)
-                {
-                    watcher.Value(default(ServiceOwnerChangedEventArgs), createException());
-                }
-
-                foreach (var handler in signalHandlers)
-                {
-                    handler.Value(null, createException());
-                }
-
-                foreach (var tcs in pendingMethods.Values)
-                {
-                    tcs.SetException(createException());
-                }
-            }
-
-            if (_onDisconnect != null)
-            {
-                _onDisconnect(dispose ? null : exception);
-            }
-        }
-
-        private void SendMessage(Message message, IMessageStream peer)
+        public void SendMessage(Message message, IMessageStream peer)
         {
             if (message.Header.Serial == 0)
-            {
                 message.Header.Serial = GenerateSerial();
-            }
             peer.TrySendMessage(message);
         }
 
-        private async void HandleMethodCall(Message methodCall, IMessageStream peer)
+        IMethodHandlerPathPart PartHandlerForPath(ObjectPath? path)
         {
-            switch (methodCall.Header.Interface)
+            var p = ObjectPath.Root;
+            if (path.HasValue)
+                p = path.Value;
+            IMethodHandlerPathPart pathHandler = RootPath;
+            foreach (var part in p.Decomposed)
             {
-                case "org.freedesktop.DBus.Peer":
-                    switch (methodCall.Header.Member)
-                    {
-                        case "Ping":
-                        {
-                            SendMessage(MessageHelper.ConstructReply(methodCall), peer);
-                            return;
-                        }
-                        case "GetMachineId":
-                        {
-                            SendMessage(MessageHelper.ConstructReply(methodCall, Environment.MachineId), peer);
-                            return;
-                        }
-                    }
+                pathHandler = pathHandler.SubParts.GetValueOrDefault(part);
+                if (pathHandler == null)
                     break;
             }
+            return pathHandler;
+        }
 
-            MethodHandler methodHandler;
-            if (_methodHandlers.TryGetValue(methodCall.Header.Path.Value, out methodHandler))
+        async void HandleMethodCall(Message methodCall, IMessageStream peer)
+        {
+            bool pathKnown = false;
+            IMethodHandler methodHandler = null;
+            if (methodCall.Header.Path.HasValue && !string.IsNullOrEmpty(methodCall.Header.Interface))
             {
-                var reply = await methodHandler(methodCall);
-                reply.Header.ReplySerial = methodCall.Header.Serial;
-                reply.Header.Destination = methodCall.Header.Sender;
-                SendMessage(reply, peer);
-            }
-            else
-            {
-                if (methodCall.Header.Interface == "org.freedesktop.DBus.Introspectable"
-                    && methodCall.Header.Member == "Introspect"
-                    && methodCall.Header.Path.HasValue)
+                var pathHandler = PartHandlerForPath(methodCall.Header.Path.Value);
+                if (pathHandler != null)
                 {
-                    var path = methodCall.Header.Path.Value;
-                    var childNames = GetChildNames(path);
-                    if (childNames.Length > 0)
-                    {
-                        var writer = new IntrospectionWriter();
-
-                        writer.WriteDocType();
-                        writer.WriteNodeStart(path.Value);
-                        foreach (var child in childNames)
-                        {
-                            writer.WriteChildNode(child);
-                        }
-                        writer.WriteNodeEnd();
-                        
-                        var xml = writer.ToString();
-                        SendMessage(MessageHelper.ConstructReply(methodCall, xml), peer);
-                    }
+                    pathKnown = true;
+                    if (!pathHandler.InterfaceHandlers.TryGetValue(methodCall.Header.Interface, out methodHandler))
+                        methodHandler = GlobalInterfaceHandlers.GetValueOrDefault(methodCall.Header.Interface);
+                    if (methodHandler != null && !methodHandler.CheckExposure(methodCall.Header.Path.Value))
+                        methodHandler = null;
                 }
-                SendUnknownMethodError(methodCall, peer);
             }
-        }
-
-        private async Task<string> CallHelloAsync()
-        {
-            Message callMsg = new Message(
-                new Header(MessageType.MethodCall)
+            if (methodHandler != null)
+            {
+                var reply = await methodHandler.HandleMethodCall(methodCall);
+                if (reply != null)
                 {
-                    Path = DBusObjectPath,
-                    Interface = DBusInterface,
-                    Member = "Hello",
-                    Destination = DBusServiceName
-                },
-                body: null,
-                unixFds: null
-            );
-
-            Message reply = await CallMethodAsync(callMsg, checkConnected: false, checkReplyType: false);
-
-            if (reply.Header.MessageType == MessageType.Error)
-            {
-                return string.Empty;
+                    reply.Header.ReplySerial = methodCall.Header.Serial;
+                    reply.Header.Destination = methodCall.Header.Sender;
+                    SendMessage(reply, peer);
+                }
+                else if (methodCall.Header.ReplyExpected)
+                    SendMessage(MessageHelper.ConstructReply(methodCall), peer);
             }
-            else if (reply.Header.MessageType == MessageType.MethodReturn)
+            else if (methodCall.Header.ReplyExpected)
             {
-                var reader = new MessageReader(reply, null);
-                return reader.ReadString();
-            }
-            else
-            {
-                throw new ProtocolException("Got unexpected message of type " + reply.Header.MessageType + " while waiting for a MethodReturn or Error");
+                if (!pathKnown)
+                    SendErrorReply(methodCall, DBusErrors.UnknownObject, $"No objects at path {methodCall.Header.Path}", peer);
+                else
+                    SendErrorReply(methodCall, DBusErrors.UnknownInterface, $"No interface {methodCall.Header.Interface} at path {methodCall.Header.Path}", peer);
             }
         }
 
-        private async Task<RequestNameReply> CallRequestNameAsync(string name, RequestNameOptions options)
+        void SendErrorReply(Message incoming, DBusErrors error, string errorMessage, IMessageStream peer)
         {
-            var writer = new MessageWriter();
-            writer.WriteString(name);
-            writer.WriteUInt32((uint)options);
-
-            Message callMsg = new Message(
-                new Header(MessageType.MethodCall)
-                {
-                    Path = DBusObjectPath,
-                    Interface = DBusInterface,
-                    Member = "RequestName",
-                    Destination = DBusServiceName,
-                    Signature = "su"
-                },
-                writer.ToArray(),
-                writer.UnixFds
-            );
-
-            Message reply = await CallMethodAsync(callMsg, checkConnected: true, checkReplyType: true);
-
-            var reader = new MessageReader(reply, null);
-            var rv = reader.ReadUInt32();
-            return (RequestNameReply)rv;
+            SendMessage(MessageHelper.ConstructErrorReply(incoming, error, errorMessage), peer);
         }
 
-        private async Task<ReleaseNameReply> CallReleaseNameAsync(string name)
-        {
-            var writer = new MessageWriter();
-            writer.WriteString(name);
-
-            Message callMsg = new Message(
-                new Header(MessageType.MethodCall)
-                {
-                    Path = DBusObjectPath,
-                    Interface = DBusInterface,
-                    Member = "ReleaseName",
-                    Destination = DBusServiceName,
-                    Signature = Signature.StringSig
-                },
-                writer.ToArray(),
-                writer.UnixFds
-            );
-
-            Message reply = await CallMethodAsync(callMsg, checkConnected: true, checkReplyType: true);
-
-            var reader = new MessageReader(reply, null);
-            var rv = reader.ReadUInt32();
-            return (ReleaseNameReply)rv;
-        }
-
-        private void SendUnknownMethodError(Message callMessage, IMessageStream peer)
-        {
-            if (!callMessage.Header.ReplyExpected)
-            {
-                return;
-            }
-
-            string errMsg = String.Format("Method \"{0}\" with signature \"{1}\" on interface \"{2}\" doesn't exist",
-                                           callMessage.Header.Member,
-                                           callMessage.Header.Signature?.Value,
-                                           callMessage.Header.Interface);
-
-            SendErrorReply(callMessage, "org.freedesktop.DBus.Error.UnknownMethod", errMsg, peer);
-        }
-
-        private void SendErrorReply(Message incoming, string errorName, string errorMessage, IMessageStream peer)
-        {
-            SendMessage(MessageHelper.ConstructErrorReply(incoming, errorName, errorMessage), peer);
-        }
-
-        private uint GenerateSerial()
+        uint GenerateSerial()
         {
             return (uint)Interlocked.Increment(ref _methodSerial);
         }
 
-        private async Task<Message> CallMethodAsync(Message msg, bool checkConnected, bool checkReplyType)
+        public Task<Message> CallMethodAsync(Message msg, bool checkConnected = true)
+        {
+            return CallMethodAsync(msg, checkConnected, checkReplyType: true);
+        }
+
+        public async Task<Message> CallMethodAsync(Message msg, bool checkConnected, bool checkReplyType)
         {
             msg.Header.ReplyExpected = true;
             var serial = GenerateSerial();
             msg.Header.Serial = serial;
 
-            TaskCompletionSource<Message> pending = new TaskCompletionSource<Message>();
+            var pending = new TaskCompletionSource<Message>();
             lock (_gate)
             {
                 if (checkConnected)
-                {
                     ThrowIfNotConnected();
-                }
-                else
-                {
-                    ThrowIfNotConnecting();
-                }
                 _pendingMethods[msg.Header.Serial] = pending;
             }
 
             try
             {
-                await _stream.SendMessageAsync(msg);
+                await SendMessageAsync(msg);
             }
             catch
             {
@@ -884,7 +659,6 @@ namespace Tmds.DBus
             }
 
             var reply = await pending.Task;
-
             if (checkReplyType)
             {
                 switch (reply.Header.MessageType)
@@ -894,10 +668,7 @@ namespace Tmds.DBus
                     case MessageType.Error:
                         string errorMessage = String.Empty;
                         if (reply.Header.Signature?.Value?.StartsWith("s") == true)
-                        {
-                            MessageReader reader = new MessageReader(reply, null);
-                            errorMessage = reader.ReadString();
-                        }
+                            errorMessage = new MessageReader(reply).ReadString();
                         throw new DBusException(reply.Header.ErrorName, errorMessage);
                     default:
                         throw new ProtocolException("Got unexpected message of type " + reply.Header.MessageType + " while waiting for a MethodReturn or Error");
@@ -907,101 +678,57 @@ namespace Tmds.DBus
             return reply;
         }
 
-        private void RemoveSignalHandler(SignalMatchRule rule, SignalHandler dlg)
+        Task RemoveSignalHandler(SignalMatchRule rule, SignalHandler dlg)
         {
             lock (_gate)
             {
-                if (_signalHandlers?.ContainsKey(rule) == true)
+                if (_signalHandlers.ContainsKey(rule))
                 {
-                    _signalHandlers[rule] = (SignalHandler)Delegate.Remove(_signalHandlers[rule], dlg);
+                    var sh = _signalHandlers[rule];
+                    _signalHandlers[rule] = (SignalHandler)Delegate.Remove(sh, dlg);
                     if (_signalHandlers[rule] == null)
                     {
                         _signalHandlers.Remove(rule);
-                        if (ConnectionInfo.RemoteIsBus)
-                        {
-                            CallRemoveMatchRule(rule.ToString());
-                        }
+                        if (RemoteIsBus == true)
+                            return _dbus.RemoveMatch(rule.ToString());
                     }
                 }
             }
+            return Task.CompletedTask;
         }
 
-        private void RemoveNameOwnerWatcher(string key, OwnerChangedMatchRule rule, Action<ServiceOwnerChangedEventArgs, Exception> dlg)
+        public IEnumerable<string> RegisteredPathChildren(ObjectPath path)
         {
             lock (_gate)
             {
-                if (_nameOwnerWatchers?.ContainsKey(key) == true)
+                var pathHandler = PartHandlerForPath(path);
+                return (pathHandler != null) ? pathHandler.SubParts.Keys : Enumerable.Empty<string>();
+            }
+        }
+        public IEnumerable<(string InterfaceName, IMethodHandler Handler)> RegisteredPathHandlers(ObjectPath? path, string maskInterface = null)
+        {
+            lock (_gate)
+            {
+                if (path.HasValue)
                 {
-                    _nameOwnerWatchers[key] = (Action<ServiceOwnerChangedEventArgs, Exception>)Delegate.Remove(_nameOwnerWatchers[key], dlg);
-                    if (_nameOwnerWatchers[key] == null)
+                    var pathHandler = PartHandlerForPath(path);
+                    if (pathHandler != null)
                     {
-                        _nameOwnerWatchers.Remove(key);
-                        CallRemoveMatchRule(rule.ToString());
+                        var globalHandlers = GlobalInterfaceHandlers.Where(ih => ih.Key != maskInterface && ih.Value.CheckExposure(path.Value)).Select(ih => (ih.Key, ih.Value));
+                        var vals = pathHandler.InterfaceHandlers.Where(ih => ih.Key != maskInterface && ih.Value.CheckExposure(path.Value));
+                        if (vals.Any())
+                            return globalHandlers.Concat(vals.Select(v => (v.Key, v.Value)));
+                        else if (path == ObjectPath.Root) // return global handlers at root
+                            return globalHandlers;
                     }
-                }
-            }
-        }
-
-        private void CallRemoveMatchRule(string rule)
-        {
-            var reply = CallMethodAsync(DBusServiceName, DBusObjectPath, DBusInterface, "RemoveMatch", rule);
-        }
-
-        private Task CallAddMatchRuleAsync(string rule)
-        {
-            return CallMethodAsync(DBusServiceName, DBusObjectPath, DBusInterface, "AddMatch", rule);
-        }
-
-        private Task CallMethodAsync(string destination, ObjectPath objectPath, string @interface, string method, string arg)
-        {
-            var header = new Header(MessageType.MethodCall)
-            {
-                Path = objectPath,
-                Interface = @interface,
-                Member = @method,
-                Signature = Signature.StringSig,
-                Destination = destination
-            };
-            var writer = new MessageWriter();
-            writer.WriteString(arg);
-            var message = new Message(
-                header,
-                writer.ToArray(),
-                writer.UnixFds
-            );
-            return CallMethodAsync(message);
-        }
-
-        private void ThrowIfNotConnected()
-            => Connection.ThrowIfNotConnected(_disposed, _state, _disconnectReason);
-
-        private void ThrowIfNotConnecting()
-            => Connection.ThrowIfNotConnecting(_disposed, _state, _disconnectReason);
-
-        public string[] GetChildNames(ObjectPath path)
-        {
-            lock (_gate)
-            {
-                string[] childNames = null;
-                if (_childNames.TryGetValue(path, out childNames))
-                {
-                    return childNames;
                 }
                 else
                 {
-                    return Array.Empty<string>();
+                    return GlobalInterfaceHandlers.Where(ih => ih.Key != maskInterface).Select(ih => (ih.Key, ih.Value));
                 }
+                return Enumerable.Empty<(string InterfaceName, IMethodHandler Handler)>();
             }
         }
 
-        public Task<string> StartServerAsync(string address)
-        {
-            var localServer = _stream as LocalServer;
-            if (localServer == null)
-            {
-                throw new InvalidOperationException("Not a server connection.");
-            }
-            return localServer.StartAsync(address);
-        }
     }
 }

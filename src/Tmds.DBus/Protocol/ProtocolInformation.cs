@@ -3,10 +3,10 @@
 // This software is made available under the MIT License
 // See COPYING for details
 
+using Tmds.DBus.Objects;
 using System;
 using System.Collections.Generic;
 using System.Reflection;
-using Tmds.DBus.CodeGen;
 
 namespace Tmds.DBus.Protocol
 {
@@ -44,78 +44,44 @@ namespace Tmds.DBus.Protocol
         public static int GetAlignment(Type type)
         {
             if (type.GetTypeInfo().IsEnum)
-            {
                 type = Enum.GetUnderlyingType(type);
-            }
 
             if (type == typeof(bool))
-            {
                 return GetAlignment(DType.Boolean);
-            }
             else if (type == typeof(byte))
-            {
                 return GetAlignment(DType.Byte);
-            }
             else if (type == typeof(double))
-            {
                 return GetAlignment(DType.Double);
-            }
             else if (type == typeof(short))
-            {
                 return GetAlignment(DType.Int16);
-            }
             else if (type == typeof(int))
-            {
                 return GetAlignment(DType.Int32);
-            }
             else if (type == typeof(long))
-            {
                 return GetAlignment(DType.Int64);
-            }
             else if (type == typeof(ObjectPath))
-            {
                 return GetAlignment(DType.ObjectPath);
-            }
             else if (type == typeof(Signature))
-            {
                 return GetAlignment(DType.Signature);
-            }
             else if (type == typeof(string))
-            {
                 return GetAlignment(DType.String);
-            }
             else if (type == typeof(float))
-            {
                 return GetAlignment(DType.Single);
-            }
             else if (type == typeof(ushort))
-            {
                 return GetAlignment(DType.UInt16);
-            }
             else if (type == typeof(uint))
-            {
                 return GetAlignment(DType.UInt32);
-            }
             else if (type == typeof(ulong))
-            {
                 return GetAlignment(DType.UInt64);
-            }
             else if (type == typeof(object))
-            {
                 return GetAlignment(DType.Variant);
-            }
             else if (type == typeof(IDBusObject))
-            {
                 return GetAlignment(DType.Variant);
-            }
 
-            if (ArgTypeInspector.IsDBusObjectType(type, isCompileTimeType: true))
-            {
+            if (ArgTypeInspector.IsDBusObjectType(type))
                 return GetAlignment(DType.Variant);
-            }
 
             Type elementType;
-            if (ArgTypeInspector.InspectEnumerableType(type, out elementType, isCompileTimeType: true)
+            if (ArgTypeInspector.InspectEnumerableType(type, out elementType)
                 != ArgTypeInspector.EnumerableType.NotEnumerable)
             {
                 return GetAlignment(DType.Array);
@@ -124,11 +90,6 @@ namespace Tmds.DBus.Protocol
             if (ArgTypeInspector.IsStructType(type))
             {
                 return GetAlignment(DType.StructBegin);
-            }
-
-            if (ArgTypeInspector.IsSafeHandleType(type))
-            {
-                return GetAlignment(DType.UnixFd);
             }
 
             throw new ArgumentException($"Cannot (de)serialize Type '{type.FullName}'");

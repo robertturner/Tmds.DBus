@@ -251,7 +251,7 @@ namespace Tmds.DBus.Transports
             {
                 if (guid != authenticationResult.Guid)
                 {
-                    throw new ConnectException("Authentication failure: Unexpected GUID");
+                    throw new ConnectionException("Authentication failure: Unexpected GUID");
                 }
             }
         }
@@ -284,7 +284,7 @@ namespace Tmds.DBus.Transports
                 }
             }
 
-            throw new ConnectException("Authentication failure");
+            throw new ConnectionException("Authentication failure");
         }
 
         private async Task<AuthenticationResult> SendAuthCommand(string command)
@@ -405,15 +405,14 @@ namespace Tmds.DBus.Transports
             try
             {
                 await _sendSemaphore.WaitAsync();
-                PendingSend pendingSend;
-                while (_sendQueue.TryDequeue(out pendingSend))
+                while (_sendQueue.TryDequeue(out PendingSend pendingSend))
                 {
                     try
                     {
                         await _socket.SendAsync(pendingSend.Message);
                         pendingSend.CompletionSource?.SetResult(true);
                     }
-                    catch (System.Exception)
+                    catch (Exception)
                     {
                         pendingSend.CompletionSource?.SetResult(false);
                     }

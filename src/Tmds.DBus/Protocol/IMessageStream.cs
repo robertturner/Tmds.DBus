@@ -3,11 +3,12 @@
 // See COPYING for details
 
 using System;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace Tmds.DBus.Protocol
 {
-    interface IMessageStream : IDisposable
+    public interface IMessageStream : IDisposable
     {
         Task<Message> ReceiveMessageAsync();
         Task SendMessageAsync(Message message);

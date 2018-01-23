@@ -3,7 +3,6 @@ using System.Collections.Generic;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Threading.Tasks;
-using Tmds.DBus.CodeGen;
 using Tmds.DBus.Protocol;
 using Xunit;
 
@@ -33,10 +32,9 @@ namespace Tmds.DBus.Tests
 
         struct EmptyStruct
         {}
-
+#if false
         private static MethodInfo s_createWriteDelegateMethod = typeof(WriteMethodFactory)
             .GetMethod(nameof(WriteMethodFactory.CreateWriteMethodDelegate), BindingFlags.Static | BindingFlags.Public);
-
         [InlineData(typeof(sbyte))]
         [InlineData(typeof(EmptyStruct))]
         [InlineData(typeof(MyDBusObject))]
@@ -124,6 +122,7 @@ namespace Tmds.DBus.Tests
                 Assert.Equal(littleEndianData, bytes);
             }
         }
+#endif
 
         public enum Gender
         {

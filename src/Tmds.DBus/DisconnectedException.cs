@@ -6,13 +6,22 @@ using System;
 
 namespace Tmds.DBus
 {
-    /// <summary>
-    /// Exception thrown when the D-Bus connection was closed after being succesfully established. When the connection is
-    /// closed during the connect operation, ConnectException is thrown instead.
-    /// </summary>
     public class DisconnectedException : Exception
     {
-        internal DisconnectedException(Exception innerException) : base(innerException.Message, innerException)
-        { }
+        public DisconnectedException(Exception innerException) : base(innerException.Message, innerException)
+        {
+        }
+
+        internal DisconnectedException()
+        {
+        }
+
+        internal DisconnectedException(string message) : base(message)
+        {
+        }
+
+        internal DisconnectedException(string message, Exception innerException) : base(message, innerException)
+        {
+        }
     }
 }

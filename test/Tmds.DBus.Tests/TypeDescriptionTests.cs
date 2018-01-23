@@ -4,7 +4,7 @@ using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Runtime.CompilerServices;
-using Tmds.DBus.CodeGen;
+using Tmds.DBus.Objects;
 using Tmds.DBus.Protocol;
 using Xunit;
 
@@ -25,10 +25,12 @@ namespace Tmds.DBus.Tests
         [InlineData(typeof(IInvalidDBusObjectInterface1), false)]
         public void ValidInterfaceType(Type type, bool expectedValid)
         {
+            var proxyBuilder = new ClientProxyManager(null);
             bool valid = true;
             try
             {
-                var description = TypeDescription.DescribeInterface(type);
+                var description = TypeDescription.GetDescriptor(type);
+                
             }
             catch (System.Exception e)
             {
@@ -53,7 +55,7 @@ namespace Tmds.DBus.Tests
             bool valid = true;
             try
             {
-                var description = TypeDescription.DescribeObject(type);
+                var description = TypeDescription.GetDescriptor(type);
             }
             catch (System.Exception e)
             {
@@ -86,7 +88,7 @@ namespace Tmds.DBus.Tests
             bool valid = true;
             try
             {
-                var description = TypeDescription.DescribeInterface(type);
+                var description = TypeDescription.GetDescriptor(type);
             }
             catch (System.Exception e)
             {
@@ -99,21 +101,17 @@ namespace Tmds.DBus.Tests
         [Fact]
         public void TypeAndInterfaceDescription()
         {
-            var description = TypeDescription.DescribeInterface(typeof(IValidDBusObjectInterface));
+            var description = TypeDescription.GetDescriptor(typeof(IValidDBusObjectInterface));
 
             Assert.Equal(typeof(IValidDBusObjectInterface), description.Type);
-            Assert.Equal(2, description.Interfaces.Count);
-            Assert.Equal("tmds.dbus.tests.empty", description.Interfaces[0].Name);
-            Assert.Equal("tmds.dbus.tests.empty2", description.Interfaces[1].Name);
-            Assert.Equal(typeof(IEmptyDBusInterface), description.Interfaces[0].Type);
-            Assert.Equal(typeof(IEmptyDBusInterface2), description.Interfaces[1].Type);
+            Assert.Equal("tmds.dbus.tests.empty", description.InterfaceName);
         }
-
+#if false
         [Fact]
         public void SignalDescription()
         {
             // Task<IDisposable> WatchSomethingAsync(Action a);
-            var description = TypeDescription.DescribeInterface(typeof(IValidSignal1));
+            var description = TypeDescription.GetDescriptor(typeof(IValidSignal1));
             var signalDescription = description.Interfaces[0].Signals[0];
             Assert.Equal("Something", signalDescription.Name);
             Assert.Equal(false, signalDescription.HasOnError);
@@ -124,7 +122,7 @@ namespace Tmds.DBus.Tests
             Assert.Equal(typeof(IValidSignal1).GetTypeInfo().GetMethod("WatchSomethingAsync"), signalDescription.MethodInfo);
 
             // Task<IDisposable> WatchSomethingAsync(Action<int> a);
-            description = TypeDescription.DescribeInterface(typeof(IValidSignal2));
+            description = TypeDescription.GetDescriptor(typeof(IValidSignal2));
             signalDescription = description.Interfaces[0].Signals[0];
             Assert.Equal("Something", signalDescription.Name);
             Assert.Equal(false, signalDescription.HasOnError);
@@ -140,7 +138,7 @@ namespace Tmds.DBus.Tests
             Assert.Equal("i", argDescription.Signature);
 
             // Task<IDisposable> WatchSomethingAsync(Action<IntPair> a);
-            description = TypeDescription.DescribeInterface(typeof(IValidSignal3));
+            description = TypeDescription.GetDescriptor(typeof(IValidSignal3));
             signalDescription = description.Interfaces[0].Signals[0];
             Assert.Equal("Something", signalDescription.Name);
             Assert.Equal(typeof(IntPair), signalDescription.SignalType);
@@ -159,7 +157,7 @@ namespace Tmds.DBus.Tests
             Assert.Equal("i", argDescription.Signature);
 
             //Task<IDisposable> WatchSomethingAsync([Argument("myArg")]Action<IntPair> a);
-            description = TypeDescription.DescribeInterface(typeof(IValidSignal4));
+            description = TypeDescription.GetDescriptor(typeof(IValidSignal4));
             signalDescription = description.Interfaces[0].Signals[0];
             Assert.Equal("Something", signalDescription.Name);
             Assert.Equal(typeof(IntPair), signalDescription.SignalType);
@@ -174,7 +172,7 @@ namespace Tmds.DBus.Tests
             Assert.Equal("(ii)", argDescription.Signature);
 
             // Task<IDisposable> WatchSomethingAsync(Action<(int arg1, string arg2)> a);
-            description = TypeDescription.DescribeInterface(typeof(IValidSignal5));
+            description = TypeDescription.GetDescriptor(typeof(IValidSignal5));
             signalDescription = description.Interfaces[0].Signals[0];
             Assert.Equal("Something", signalDescription.Name);
             Assert.Equal(typeof(ValueTuple<int, string>), signalDescription.SignalType);
@@ -193,7 +191,7 @@ namespace Tmds.DBus.Tests
             Assert.Equal("s", argDescription.Signature);
 
             // Task<IDisposable> WatchSomethingAsync(Action<ValueTuple<int, string>> a);
-            description = TypeDescription.DescribeInterface(typeof(IValidSignal6));
+            description = TypeDescription.GetDescriptor(typeof(IValidSignal6));
             signalDescription = description.Interfaces[0].Signals[0];
             Assert.Equal("Something", signalDescription.Name);
             Assert.Equal(typeof(ValueTuple<int, string>), signalDescription.SignalType);
@@ -212,7 +210,7 @@ namespace Tmds.DBus.Tests
             Assert.Equal("s", argDescription.Signature);
 
             // Task<IDisposable> WatchSomethingAsync([Argument("myArg")]Action<(int arg1, string arg2)> a);
-            description = TypeDescription.DescribeInterface(typeof(IValidSignal7));
+            description = TypeDescription.GetDescriptor(typeof(IValidSignal7));
             signalDescription = description.Interfaces[0].Signals[0];
             Assert.Equal("Something", signalDescription.Name);
             Assert.Equal(typeof(ValueTuple<int, string>), signalDescription.SignalType);
@@ -227,7 +225,7 @@ namespace Tmds.DBus.Tests
             Assert.Equal("(is)", argDescription.Signature);
 
             // Task<IDisposable> WatchSomethingAsync(Action a, Action<Exception>);
-            description = TypeDescription.DescribeInterface(typeof(IValidSignal8));
+            description = TypeDescription.GetDescriptor(typeof(IValidSignal8));
             signalDescription = description.Interfaces[0].Signals[0];
             Assert.Equal("Something", signalDescription.Name);
             Assert.Equal(true, signalDescription.HasOnError);
@@ -238,7 +236,7 @@ namespace Tmds.DBus.Tests
             Assert.Equal(typeof(IValidSignal8).GetTypeInfo().GetMethod("WatchSomethingAsync"), signalDescription.MethodInfo);
 
             // Task<IDisposable> WatchSomethingAsync(Action<int> a, Action<Exception>);
-            description = TypeDescription.DescribeInterface(typeof(IValidSignal9));
+            description = TypeDescription.GetDescriptor(typeof(IValidSignal9));
             signalDescription = description.Interfaces[0].Signals[0];
             Assert.Equal("Something", signalDescription.Name);
             Assert.Equal(true, signalDescription.HasOnError);
@@ -258,7 +256,7 @@ namespace Tmds.DBus.Tests
         public void MethodDescription()
         {
             // Task FooAsync();
-            var description = TypeDescription.DescribeInterface(typeof(IValidDBusMethod1));
+            var description = TypeDescription.GetDescriptor(typeof(IValidDBusMethod1));
             var methodDescription = description.Interfaces[0].Methods[0];
             Assert.Equal("Foo",  methodDescription.Name);
             Assert.Equal(null, methodDescription.OutType);
@@ -269,7 +267,7 @@ namespace Tmds.DBus.Tests
             Assert.Equal(typeof(IValidDBusMethod1).GetTypeInfo().GetMethod("FooAsync"), methodDescription.MethodInfo);
 
             // Task FooAsync(int arg1);
-            description = TypeDescription.DescribeInterface(typeof(IValidDBusMethod2));
+            description = TypeDescription.GetDescriptor(typeof(IValidDBusMethod2));
             methodDescription = description.Interfaces[0].Methods[0];
             Assert.Equal("Foo",  methodDescription.Name);
             Assert.Equal(null, methodDescription.OutType);
@@ -285,7 +283,7 @@ namespace Tmds.DBus.Tests
             Assert.Equal("i", argDescription.Signature);
 
             // Task FooAsync(int arg1, int arg2);
-            description = TypeDescription.DescribeInterface(typeof(IValidDBusMethod3));
+            description = TypeDescription.GetDescriptor(typeof(IValidDBusMethod3));
             methodDescription = description.Interfaces[0].Methods[0];
             Assert.Equal("Foo",  methodDescription.Name);
             Assert.Equal(null, methodDescription.OutType);
@@ -305,7 +303,7 @@ namespace Tmds.DBus.Tests
             Assert.Equal("i", argDescription.Signature);
 
             // Task FooAsync(IntPair val);
-            description = TypeDescription.DescribeInterface(typeof(IValidDBusMethod4));
+            description = TypeDescription.GetDescriptor(typeof(IValidDBusMethod4));
             methodDescription = description.Interfaces[0].Methods[0];
             Assert.Equal("Foo",  methodDescription.Name);
             Assert.Equal(null, methodDescription.OutType);
@@ -321,7 +319,7 @@ namespace Tmds.DBus.Tests
             Assert.Equal("(ii)", argDescription.Signature);
 
             // Task FooAsync([Argument("arg")]IntPair val);
-            description = TypeDescription.DescribeInterface(typeof(IValidDBusMethod5));
+            description = TypeDescription.GetDescriptor(typeof(IValidDBusMethod5));
             methodDescription = description.Interfaces[0].Methods[0];
             Assert.Equal("Foo",  methodDescription.Name);
             Assert.Equal(null, methodDescription.OutType);
@@ -337,7 +335,7 @@ namespace Tmds.DBus.Tests
             Assert.Equal("(ii)", argDescription.Signature);
 
             // Task<int> FooAsync();
-            description = TypeDescription.DescribeInterface(typeof(IValidDBusMethod6));
+            description = TypeDescription.GetDescriptor(typeof(IValidDBusMethod6));
             methodDescription = description.Interfaces[0].Methods[0];
             Assert.Equal("Foo",  methodDescription.Name);
             Assert.Equal(typeof(int), methodDescription.OutType);
@@ -353,7 +351,7 @@ namespace Tmds.DBus.Tests
             Assert.Equal("i", argDescription.Signature);
 
             // Task<IntPair> FooAsync();
-            description = TypeDescription.DescribeInterface(typeof(IValidDBusMethod7));
+            description = TypeDescription.GetDescriptor(typeof(IValidDBusMethod7));
             methodDescription = description.Interfaces[0].Methods[0];
             Assert.Equal("Foo",  methodDescription.Name);
             Assert.Equal(typeof(IntPair), methodDescription.OutType);
@@ -374,7 +372,7 @@ namespace Tmds.DBus.Tests
 
             // [return: Argument("arg")]
             // Task<IntPair> FooAsync();
-            description = TypeDescription.DescribeInterface(typeof(IValidDBusMethod8));
+            description = TypeDescription.GetDescriptor(typeof(IValidDBusMethod8));
             methodDescription = description.Interfaces[0].Methods[0];
             Assert.Equal("Foo",  methodDescription.Name);
             Assert.Equal(typeof(IntPair), methodDescription.OutType);
@@ -390,7 +388,7 @@ namespace Tmds.DBus.Tests
             Assert.Equal("(ii)", argDescription.Signature);
 
             // Task<(int arg1, string arg2)> FooAsync();
-            description = TypeDescription.DescribeInterface(typeof(IValidDBusMethod9));
+            description = TypeDescription.GetDescriptor(typeof(IValidDBusMethod9));
             methodDescription = description.Interfaces[0].Methods[0];
             Assert.Equal("Foo",  methodDescription.Name);
             Assert.Equal(typeof(ValueTuple<int, string>), methodDescription.OutType);
@@ -410,7 +408,7 @@ namespace Tmds.DBus.Tests
             Assert.Equal("s", argDescription.Signature);
 
             // Task<ValueTuple<int, string>> FooAsync();
-            description = TypeDescription.DescribeInterface(typeof(IValidDBusMethod10));
+            description = TypeDescription.GetDescriptor(typeof(IValidDBusMethod10));
             methodDescription = description.Interfaces[0].Methods[0];
             Assert.Equal("Foo",  methodDescription.Name);
             Assert.Equal(typeof(ValueTuple<int, string>), methodDescription.OutType);
@@ -431,7 +429,7 @@ namespace Tmds.DBus.Tests
 
             // [return: Argument("arg")]
             // Task<(int arg1, string arg2)> FooAsync();
-            description = TypeDescription.DescribeInterface(typeof(IValidDBusMethod11));
+            description = TypeDescription.GetDescriptor(typeof(IValidDBusMethod11));
             methodDescription = description.Interfaces[0].Methods[0];
             Assert.Equal("Foo",  methodDescription.Name);
             Assert.Equal(typeof(ValueTuple<int, string>), methodDescription.OutType);
@@ -447,7 +445,7 @@ namespace Tmds.DBus.Tests
             Assert.Equal("(is)", argDescription.Signature);
 
             // Task FooAsync(ValueTuple<int, string> val);
-            description = TypeDescription.DescribeInterface(typeof(IValidDBusMethod12));
+            description = TypeDescription.GetDescriptor(typeof(IValidDBusMethod12));
             methodDescription = description.Interfaces[0].Methods[0];
             Assert.Equal("Foo",  methodDescription.Name);
             Assert.Equal(null, methodDescription.OutType);
@@ -463,7 +461,7 @@ namespace Tmds.DBus.Tests
             Assert.Equal("(is)", argDescription.Signature);
 
             // Task FooAsync([Argument("arg")]ValueTuple<int, string> val);
-            description = TypeDescription.DescribeInterface(typeof(IValidDBusMethod13));
+            description = TypeDescription.GetDescriptor(typeof(IValidDBusMethod13));
             methodDescription = description.Interfaces[0].Methods[0];
             Assert.Equal("Foo",  methodDescription.Name);
             Assert.Equal(null, methodDescription.OutType);
@@ -478,13 +476,14 @@ namespace Tmds.DBus.Tests
             Assert.Equal(typeof(ValueTuple<int, string>), argDescription.Type);
             Assert.Equal("(is)", argDescription.Signature);
         }
+#endif
 
         [Theory]
         [InlineData(typeof(IUnsupportedDBusMethod1))]
         [InlineData(typeof(IUnsupportedSignal1))]
         public void UnsupportedInterfaces(Type type)
         {
-            Assert.Throws<NotSupportedException>(() => TypeDescription.DescribeInterface(type));
+            Assert.Throws<ArgumentException>(() => TypeDescription.GetDescriptor(type));
         }
 
         [Dictionary]
@@ -495,13 +494,13 @@ namespace Tmds.DBus.Tests
             public bool IsMarried;
         }
 
-
+#if false
         [Theory]
         [InlineData(typeof(IPersonProperties1))]
         [InlineData(typeof(IPersonProperties2))]
         public void Properties(Type type)
         {
-            var description = TypeDescription.DescribeInterface(type);
+            var description = TypeDescription.GetDescriptor(type);
             var interf = description.Interfaces[0];
             Assert.NotNull(interf.Properties);
             var nameProperty = interf.Properties.Where(p => p.Name == "Name").SingleOrDefault();
@@ -514,6 +513,7 @@ namespace Tmds.DBus.Tests
             Assert.NotNull(isMarriedProperty);
             Assert.Equal("b", isMarriedProperty.Signature);
         }
+#endif
 
         [DBusInterface("tmds.dbus.tests.personproperties1")]
         interface IPersonProperties1 : IDBusObject
@@ -521,7 +521,7 @@ namespace Tmds.DBus.Tests
             Task<PersonProperties> GetAllAsync();
         }
 
-        [DBusInterface("tmds.dbus.tests.personproperties2", PropertyType = typeof(PersonProperties))]
+        [DBusInterface("tmds.dbus.tests.personproperties2"/*, PropertyType = typeof(PersonProperties)*/)]
         interface IPersonProperties2 : IDBusObject
         {}
 
@@ -536,7 +536,7 @@ namespace Tmds.DBus.Tests
         {}
         interface IEmptyInterface
         {}
-        interface IValidDBusObjectInterface : IEmptyDBusInterface, IEmptyDBusInterface2, IDBusObject
+        interface IValidDBusObjectInterface : IEmptyDBusInterface, IDBusObject
         {}
         interface IValidDBusObjectInterface2 : IDBusObject
         {}
@@ -577,7 +577,7 @@ namespace Tmds.DBus.Tests
         [DBusInterface("tmds.dbus.tests.validmethod")]
         interface IValidDBusMethod5 : IDBusObject
         {
-            Task FooAsync([Argument("arg")]IntPair val);
+            Task FooAsync([DBusArgName("arg")]IntPair val);
         }
         [DBusInterface("tmds.dbus.tests.validmethod")]
         interface IValidDBusMethod6 : IDBusObject
@@ -592,7 +592,7 @@ namespace Tmds.DBus.Tests
         [DBusInterface("tmds.dbus.tests.validmethod")]
         interface IValidDBusMethod8 : IDBusObject
         {
-            [return: Argument("arg")]
+            [return: DBusArgName("arg")]
             Task<IntPair> FooAsync();
         }
         [DBusInterface("tmds.dbus.tests.validmethod")]
@@ -608,7 +608,7 @@ namespace Tmds.DBus.Tests
         [DBusInterface("tmds.dbus.tests.validmethod")]
         interface IValidDBusMethod11 : IDBusObject
         {
-            [return: Argument("arg")]
+            [return: DBusArgName("arg")]
             Task<(int arg1, string arg2)> FooAsync();
         }
         [DBusInterface("tmds.dbus.tests.validmethod")]
@@ -619,7 +619,7 @@ namespace Tmds.DBus.Tests
         [DBusInterface("tmds.dbus.tests.validmethod")]
         interface IValidDBusMethod13 : IDBusObject
         {
-            Task FooAsync([Argument("arg")]ValueTuple<int, string> val);
+            Task FooAsync([DBusArgName("arg")]ValueTuple<int, string> val);
         }
 
         [DBusInterface("tmds.dbus.tests.invalidmethod")]
@@ -667,7 +667,7 @@ namespace Tmds.DBus.Tests
         [DBusInterface("tmds.dbus.tests.validsignal")]
         interface IValidSignal4 : IDBusObject
         {
-            Task<IDisposable> WatchSomethingAsync([Argument("myArg")]Action<IntPair> a);
+            Task<IDisposable> WatchSomethingAsync([DBusArgName("myArg")]Action<IntPair> a);
         }
         [DBusInterface("tmds.dbus.tests.validsignal")]
         interface IValidSignal5 : IDBusObject
@@ -682,7 +682,7 @@ namespace Tmds.DBus.Tests
         [DBusInterface("tmds.dbus.tests.validsignal")]
         interface IValidSignal7 : IDBusObject
         {
-            Task<IDisposable> WatchSomethingAsync([Argument("myArg")]Action<(int arg1, string arg2)> a);
+            Task<IDisposable> WatchSomethingAsync([DBusArgName("myArg")]Action<(int arg1, string arg2)> a);
         }
         [DBusInterface("tmds.dbus.tests.validsignal")]
         interface IValidSignal8 : IDBusObject
