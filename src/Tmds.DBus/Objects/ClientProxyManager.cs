@@ -19,10 +19,19 @@ namespace Tmds.DBus.Objects
     {
         public ClientProxyManager(IConnection connection)
         {
-            Connection = connection;
+            _connection = connection ?? throw new ArgumentNullException(nameof(connection));
         }
 
-        public IConnection Connection { get; private set; }
+        IConnection _connection;
+        public IConnection Connection
+        {
+            get
+            {
+                ThrowIfDisposed();
+                return _connection;
+            }
+        }
+
         public IDBusConnection DBusConnection { get; set; }
 
         static ProxyGenerator generator = new ProxyGenerator();
@@ -357,15 +366,15 @@ namespace Tmds.DBus.Objects
                 throw new ObjectDisposedException(typeof(ClientProxyManager).Name);
         }
 
-        public bool IsDisposed => generator == null;
+        public bool IsDisposed => _connection == null;
 
         public void Dispose()
         {
             lock (@lock)
             {
-                if (generator == null)
+                if (_connection == null)
                     return;
-                generator = null;
+                _connection = null;
                 foreach (var inst in instances)
                     inst.Value.Dispose();
                 instances = null;
