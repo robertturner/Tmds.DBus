@@ -5,6 +5,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using System.Xml.Linq;
 using Tmds.DBus.Objects;
+using Tmds.DBus.Objects.DBus;
 using Tmds.DBus.Protocol;
 using Xunit;
 

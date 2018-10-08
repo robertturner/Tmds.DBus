@@ -15,11 +15,11 @@ using Tmds.DBus.Protocol;
 namespace Tmds.DBus.Transports
 {
     using SizeT = System.UIntPtr;
-    internal class TransportSocket
+    public class TransportSocket
     {
         // Issue https://github.com/dotnet/corefx/issues/6807
-        private static PropertyInfo s_handleProperty = typeof(Socket).GetTypeInfo().GetDeclaredProperty("Handle");
-        private static PropertyInfo s_safehandleProperty = typeof(Socket).GetTypeInfo().GetDeclaredProperty("SafeHandle");
+        private static readonly PropertyInfo s_handleProperty = typeof(Socket).GetTypeInfo().GetDeclaredProperty("Handle");
+        private static readonly PropertyInfo s_safehandleProperty = typeof(Socket).GetTypeInfo().GetDeclaredProperty("SafeHandle");
 
         const int SOL_SOCKET = 1;
         const int EINTR = 4;
@@ -220,8 +220,8 @@ namespace Tmds.DBus.Transports
             if (!_supportsFdPassing)
             {
                 var readContext = _receiveData.UserToken as ReadContext;
-                readContext.Tcs = readContext.Tcs ?? new TaskCompletionSource<int>();
-                var retTask = readContext.Tcs.Task;
+                var tcs = readContext.Tcs ?? new TaskCompletionSource<int>();
+                readContext.Tcs = tcs;
                 _receiveData.SetBuffer(buffer, offset, count);
                 readContext.FileDescriptors = fileDescriptors;
                 if (!_socket.ReceiveAsync(_receiveData))
@@ -232,19 +232,19 @@ namespace Tmds.DBus.Transports
                         return Task.FromException<int>(new SocketException((int)_receiveData.SocketError));
                 }
                 else
-                    return retTask;
+                    return tcs.Task;
             }
             else
             {
                 var readContext = _waitForData.UserToken as ReadContext;
-                readContext.Tcs = readContext.Tcs ?? new TaskCompletionSource<int>();
+                var tcs = readContext.Tcs ?? new TaskCompletionSource<int>();
+                readContext.Tcs = tcs;
                 readContext.Buffer = buffer;
                 readContext.Offset = offset;
                 readContext.Count = count;
                 readContext.FileDescriptors = fileDescriptors;
                 while (true)
                 {
-                    var retTask = readContext.Tcs.Task;
                     if (!_socket.ReceiveAsync(_waitForData))
                     {
                         int rv = DoRead(buffer, offset, count, fileDescriptors);
@@ -260,7 +260,7 @@ namespace Tmds.DBus.Transports
                         }
                     }
                     else
-                        return retTask;
+                        return tcs.Task;
                 }
             }
         }
@@ -375,9 +375,9 @@ namespace Tmds.DBus.Transports
         private Task SendBufferListAsync(List<ArraySegment<byte>> bufferList)
         {
             var sendContext = _sendArgs.UserToken as SendContext;
-            sendContext.Tcs = sendContext.Tcs ?? new TaskCompletionSource<object>();
+            var tcs = sendContext.Tcs ?? new TaskCompletionSource<object>();
+            sendContext.Tcs = tcs;
             _sendArgs.BufferList = bufferList;
-            var retTask = sendContext.Tcs.Task;
             if (!_socket.SendAsync(_sendArgs))
             {
                 if (_sendArgs.SocketError == SocketError.Success)
@@ -386,7 +386,7 @@ namespace Tmds.DBus.Transports
                     return Task.FromException(new SocketException((int)_sendArgs.SocketError));
             }
             else
-                return retTask;
+                return tcs.Task;
         }
 
         private void SendCompleted(object sender, SocketAsyncEventArgs e)

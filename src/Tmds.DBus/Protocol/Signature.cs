@@ -45,69 +45,47 @@ namespace Tmds.DBus.Protocol
         {
             if (a._data == b._data)
                 return true;
-
-            if (a._data == null)
+            if (a._data == null || b._data == null)
                 return false;
-
-            if (b._data == null)
-                return false;
-
             if (a._data.Length != b._data.Length)
                 return false;
-
             for (int i = 0 ; i != a._data.Length ; i++)
                 if (a._data[i] != b._data[i])
                     return false;
-
             return true;
         }
 
-        public static bool operator != (Signature a, Signature b)
-        {
-            return !(a == b);
-        }
+        public static bool operator != (Signature a, Signature b) => !(a == b);
 
         public override bool Equals (object o)
         {
             if (o == null)
                 return false;
-
             if (!(o is Signature))
                 return false;
-
             return this == (Signature)o;
         }
 
-        public override int GetHashCode ()
+        public override int GetHashCode()
         {
             if (_data == null)
-            {
                 return 0;
-            }
             int hash = 17;
-            for(int i = 0; i < _data.Length; i++)
-            {
-                hash = hash * 31 + _data[i].GetHashCode();
-            }
+            foreach (var d in _data)
+                hash = hash * 31 + d.GetHashCode();
             return hash;
         }
 
-        public static Signature operator + (Signature s1, Signature s2)
-        {
-            return Concat (s1, s2);
-        }
+        public static Signature operator + (Signature s1, Signature s2) => Concat(s1, s2);
 
-        public static Signature Concat (Signature s1, Signature s2)
+        public static Signature Concat(Signature s1, Signature s2)
         {
             if (s1._data == null && s2._data == null)
                 return Signature.Empty;
-
             if (s1._data == null)
                 return s2;
-
             if (s2._data == null)
                 return s1;
-
             if (s1.Length + s2.Length == 0)
                 return Signature.Empty;
 
@@ -138,10 +116,7 @@ namespace Tmds.DBus.Protocol
         }
 
 
-        public static implicit operator Signature(string value)
-        {
-            return new Signature(value);
-        }
+        public static implicit operator Signature(string value) => new Signature(value);
 
         // Basic validity is to check that every "opening" DType has a corresponding closing DType
         static bool IsValid (string strSig)
@@ -245,20 +220,9 @@ namespace Tmds.DBus.Protocol
             }
         }
 
-        public string Value
-        {
-            get {
-                if (_data == null)
-                    return String.Empty;
+        public string Value => (_data == null) ? string.Empty : Encoding.ASCII.GetString(_data);
 
-                return Encoding.ASCII.GetString (_data);
-            }
-        }
-
-        public override string ToString ()
-        {
-            return Value;
-        }
+        public override string ToString() => Value;
 
         public static Signature MakeArray (Signature signature)
         {
@@ -662,8 +626,7 @@ namespace Tmds.DBus.Protocol
             if (ArgTypeInspector.IsDBusObjectType(type))
                 return ObjectPathSig;
 
-            Type elementType;
-            var enumerableType = ArgTypeInspector.InspectEnumerableType(type, out elementType);
+            var enumerableType = ArgTypeInspector.InspectEnumerableType(type, out Type elementType);
             if (enumerableType != ArgTypeInspector.EnumerableType.NotEnumerable)
             {
                 if ((enumerableType == ArgTypeInspector.EnumerableType.EnumerableKeyValuePair) ||
@@ -695,8 +658,10 @@ namespace Tmds.DBus.Protocol
         public static Type TypeOfValueTupleOf(Type[] innerTypes)
         {
             // We only support up to 7 inner types
-            if (innerTypes == null || innerTypes.Length == 0 || innerTypes.Length > 7)
-                throw new NotSupportedException($"ValueTuple of length {innerTypes.Length} is not supported");
+            if (innerTypes == null || innerTypes.Length == 0 || innerTypes.Length > 8)
+                throw new NotSupportedException($"ValueTuple of length {innerTypes?.Length} is not supported");
+            if (innerTypes.Length > 7)
+                innerTypes = new[] { innerTypes[0], innerTypes[1], innerTypes[2], innerTypes[3], innerTypes[4], innerTypes[5], innerTypes[6], TypeOfValueTupleOf(innerTypes.Skip(7).ToArray()) };
 
             Type structType = null;
             switch (innerTypes.Length) {
@@ -721,13 +686,16 @@ namespace Tmds.DBus.Protocol
             case 7:
                 structType = typeof(ValueTuple<,,,,,,>);
                 break;
+            case 8:
+                structType = typeof(ValueTuple<,,,,,,,>);
+                break;
             }
             return structType.MakeGenericType(innerTypes);
         }
 
         class SignatureChecker
         {
-            byte[] data;
+            readonly byte[] data;
             int pos;
 
             internal SignatureChecker (byte[] data)

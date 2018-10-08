@@ -38,9 +38,9 @@ namespace Tmds.DBus
             {
                 _connection.RemoveSignalHandler(_rule, _handler);
             }
-            DBusConnection _connection;
-            SignalMatchRule _rule;
-            SignalHandler _handler;
+            readonly DBusConnection _connection;
+            readonly SignalMatchRule _rule;
+            readonly SignalHandler _handler;
         }
         class SignalMatchRule
         {
@@ -156,8 +156,8 @@ namespace Tmds.DBus
         readonly object _gate = new object();
         readonly Dictionary<SignalMatchRule, SignalHandler> _signalHandlers = new Dictionary<SignalMatchRule, SignalHandler>();
         Dictionary<uint, TaskCompletionSource<Message>> _pendingMethods = new Dictionary<uint, TaskCompletionSource<Message>>();
-        MethodHandlerPathPart RootPath = new MethodHandlerPathPart(null, null);
-        Dictionary<string, IMethodHandler> GlobalInterfaceHandlers = new Dictionary<string, IMethodHandler>();
+        readonly MethodHandlerPathPart RootPath = new MethodHandlerPathPart(null, null);
+        readonly Dictionary<string, IMethodHandler> GlobalInterfaceHandlers = new Dictionary<string, IMethodHandler>();
 
         public interface IMethodHandlerPathPart
         {
@@ -179,8 +179,8 @@ namespace Tmds.DBus
 
             public IReadOnlyDictionary<string, MethodHandlerPathPart> OurSubParts => ourSubParts;
 
-            Dictionary<string, MethodHandlerPathPart> ourSubParts = new Dictionary<string, MethodHandlerPathPart>();
-            Dictionary<string, IMethodHandlerPathPart> externalSubParts = new Dictionary<string, IMethodHandlerPathPart>();
+            readonly Dictionary<string, MethodHandlerPathPart> ourSubParts = new Dictionary<string, MethodHandlerPathPart>();
+            readonly Dictionary<string, IMethodHandlerPathPart> externalSubParts = new Dictionary<string, IMethodHandlerPathPart>();
             public void AddOurSubPart(string part, MethodHandlerPathPart handler)
             {
                 ourSubParts[part] = handler;
@@ -224,20 +224,17 @@ namespace Tmds.DBus
             public ObjectPath Path => new ObjectPath(PathSubPartsReversed().Reverse());
         }
 
-        private Task<string> _localName;
-        private Action<Exception> _onDisconnect;
-        private int _methodSerial;
-        private ConcurrentQueue<PendingSend> _sendQueue;
-        private SemaphoreSlim _sendSemaphore;
-        private IClientObjectProvider _clientProvider;
-        private IDBus _dbus;
+        Task<string> _localName;
+        Action<Exception> _onDisconnect;
+        int _methodSerial;
+        readonly ConcurrentQueue<PendingSend> _sendQueue;
+        readonly SemaphoreSlim _sendSemaphore;
 
         public string LocalName => _localName.Result;
         public bool? RemoteIsBus { get; private set; }
 
-        public IDBus DBus => _dbus;
-
-        public IClientObjectProvider ProxyProvider => _clientProvider;
+        public IDBus DBus { get; private set; }
+        public IClientObjectProvider ProxyProvider { get; private set; }
 
         public bool IsDisposed => _pendingMethods == null;
         void ThrowIfDisposed()
@@ -259,7 +256,7 @@ namespace Tmds.DBus
         private DBusConnection(IMessageStream stream, IClientObjectProvider clientProvider)
         {
             _stream = stream;
-            _clientProvider = clientProvider;
+            ProxyProvider = clientProvider;
             _sendQueue = new ConcurrentQueue<PendingSend>();
             _sendSemaphore = new SemaphoreSlim(1);
         }
@@ -269,18 +266,15 @@ namespace Tmds.DBus
             ThrowIfDisposed();
             lock (_gate)
             {
-                if (_dbus != null)
+                if (DBus != null)
                     throw new InvalidOperationException("Already connected");
-                _dbus = _clientProvider.GetInstance<IDBus>(DBusObjectPath, DBusServiceName);
+                DBus = ProxyProvider.GetInstance<IDBus>(DBusObjectPath, DBusServiceName);
             }
             _onDisconnect = onDisconnect;
 
             ReceiveMessages(_stream, (_, e) => Dispose(e));
 
-            if (sayHelloToServer)
-                _localName = _dbus.Hello();
-            else
-                _localName = Task.FromResult("");
+            _localName = sayHelloToServer ? DBus.Hello() : Task.FromResult(string.Empty);
             RemoteIsBus = !string.IsNullOrEmpty(await _localName);
         }
 
@@ -296,18 +290,17 @@ namespace Tmds.DBus
                 _localName = null;
                 _stream.Dispose();
                 _signalHandlers.Clear();
-                _clientProvider.Dispose();
+                ProxyProvider.Dispose();
                 foreach (var h in GlobalInterfaceHandlers)
                     h.Value.Dispose();
                 GlobalInterfaceHandlers.Clear();
-                Action<IMethodHandlerPathPart> di = null;
-                di = mhpp =>
+                void di(IMethodHandlerPathPart mhpp)
                 {
                     foreach (var mh in mhpp.InterfaceHandlers)
                         mh.Value.Dispose();
                     foreach (var sp in mhpp.SubParts)
                         di(sp.Value);
-                };
+                }
                 di(RootPath);
                 RootPath.OurInterfaceHandlers.Clear();
             }
@@ -484,7 +477,7 @@ namespace Tmds.DBus
                     break;
                 case MessageType.Error:
                     string errMsg = String.Empty;
-                    if (msg.Header.Signature.Value.Value.StartsWith("s"))
+                    if (msg.Header.Signature.Value.Value.StartsWith("s", StringComparison.Ordinal))
                         errMsg = new MessageReader(msg).ReadString();
                     throw new DBusException(msg.Header.ErrorName, errMsg);
                 case MessageType.Invalid:
@@ -497,7 +490,7 @@ namespace Tmds.DBus
         {
             ThrowIfNotConnected();
             if (RemoteIsBus.HasValue && RemoteIsBus.Value && sender.Trim()[0] != ':')
-                sender = await _dbus.GetNameOwner(sender);
+                sender = await DBus.GetNameOwner(sender);
 
             var rule = new SignalMatchRule(
                 @interface: @interface ?? throw new ArgumentNullException(nameof(@interface)),
@@ -514,7 +507,7 @@ namespace Tmds.DBus
                 {
                     _signalHandlers[rule] = handler;
                     if (RemoteIsBus == true)
-                        task = _dbus.AddMatch(rule.ToString());
+                        task = DBus.AddMatch(rule.ToString());
                 }
             }
             var registration = new SignalHandlerRegistration(this, rule, handler);
@@ -667,7 +660,7 @@ namespace Tmds.DBus
                         return reply;
                     case MessageType.Error:
                         string errorMessage = String.Empty;
-                        if (reply.Header.Signature?.Value?.StartsWith("s") == true)
+                        if (reply.Header.Signature?.Value.StartsWith("s", StringComparison.Ordinal) == true)
                             errorMessage = new MessageReader(reply).ReadString();
                         throw new DBusException(reply.Header.ErrorName, errorMessage);
                     default:
@@ -690,7 +683,7 @@ namespace Tmds.DBus
                     {
                         _signalHandlers.Remove(rule);
                         if (RemoteIsBus == true)
-                            return _dbus.RemoveMatch(rule.ToString());
+                            return DBus.RemoveMatch(rule.ToString());
                     }
                 }
             }
@@ -715,8 +708,8 @@ namespace Tmds.DBus
                     if (pathHandler != null)
                     {
                         var globalHandlers = GlobalInterfaceHandlers.Where(ih => ih.Key != maskInterface && ih.Value.CheckExposure(path.Value)).Select(ih => (ih.Key, ih.Value));
-                        var vals = pathHandler.InterfaceHandlers.Where(ih => ih.Key != maskInterface && ih.Value.CheckExposure(path.Value));
-                        if (vals.Any())
+                        var vals = pathHandler.InterfaceHandlers.Where(ih => ih.Key != maskInterface && ih.Value.CheckExposure(path.Value)).ToList();
+                        if (vals.Count > 0)
                             return globalHandlers.Concat(vals.Select(v => (v.Key, v.Value)));
                         else if (path == ObjectPath.Root) // return global handlers at root
                             return globalHandlers;

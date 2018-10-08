@@ -6,7 +6,7 @@
 
 namespace Tmds.DBus.Protocol
 {
-    internal enum DType : byte
+    public enum DType : byte
     {
         Invalid = (byte)'\0',
 

@@ -15,8 +15,8 @@ namespace Tmds.DBus.Objects
     {
         public const string DefaultMethodReturnArgName = "value";
 
-        static Dictionary<(Type type, MemberExposure exposure), TypeDescription> typesCache = new Dictionary<(Type type, MemberExposure exposure), TypeDescription>();
-        static object staticLock = new object();
+        static readonly Dictionary<(Type type, MemberExposure exposure), TypeDescription> typesCache = new Dictionary<(Type type, MemberExposure exposure), TypeDescription>();
+        static readonly object staticLock = new object();
 
         public static TypeDescription GetDescriptor(Type type, MemberExposure exposure = MemberExposure.OnlyDBusInterfaces)
         {
@@ -39,9 +39,9 @@ namespace Tmds.DBus.Objects
             : base(null)
         {
             Type = objType;
-            IEnumerable<Type> ifces = objType.GetInterfaces();
+            Type[] ifces = objType.GetInterfaces();
             if (Type.IsInterface)
-                ifces = ifces.Concat(Type.SingleItemAsEnumerable());
+                ifces = ifces.Concat(Type.SingleItemAsEnumerable()).ToArray();
             IEnumerable<MethodInfo> methods;
             IEnumerable<PropertyInfo> properties;
             switch (exposure)
@@ -112,7 +112,7 @@ namespace Tmds.DBus.Objects
                 if (m.HasAttribute<DBusHideMethodAttribute>())
                     continue;
 
-                if (m.Name.StartsWith("Watch") && m.Name.Length > 5)
+                if (m.Name.StartsWith("Watch", StringComparison.Ordinal) && m.Name.Length > 5)
                 {
                     var sigName = m.Name.Substring(5);
                     var paramObjs = m.GetParameters();
@@ -126,10 +126,10 @@ namespace Tmds.DBus.Objects
                     if ((retType == typeof(Task<IDisposable>) || retType == typeof(IDisposable) || retType == typeof(void)) && paramObjs.Length == 1)
                     {
                         callbackType = paramObjs[0].ParameterType;
-                        if (callbackType.IsGenericType && callbackType.GetGenericTypeDefinition().FullName.StartsWith("System.Action`"))
+                        if (callbackType.IsGenericType && callbackType.GetGenericTypeDefinition().FullName.StartsWith("System.Action`", StringComparison.Ordinal))
                         {
                             var genArgs = callbackType.GenericTypeArguments;
-                            if (genArgs.Length == 1 && genArgs[0].FullName.StartsWith("System.ValueTuple`"))
+                            if (genArgs.Length == 1 && genArgs[0].FullName.StartsWith("System.ValueTuple`", StringComparison.Ordinal))
                             {
                                 tupleArg = genArgs[0];
                                 args = tupleArg.GenericTypeArguments;
@@ -185,9 +185,9 @@ namespace Tmds.DBus.Objects
             }
         }
 
-        Dictionary<MethodInfo, MethodDef> methods = new Dictionary<MethodInfo, MethodDef>();
-        Dictionary<string, PropertyDef> properties = new Dictionary<string, PropertyDef>();
-        Dictionary<string, SignalDef> signals = new Dictionary<string, SignalDef>();
+        readonly Dictionary<MethodInfo, MethodDef> methods = new Dictionary<MethodInfo, MethodDef>();
+        readonly Dictionary<string, PropertyDef> properties = new Dictionary<string, PropertyDef>();
+        readonly Dictionary<string, SignalDef> signals = new Dictionary<string, SignalDef>();
 
         public override InterfaceObjDef.MethodDef[] Methods => MethodsForInfos.Values.ToArray();
         public override InterfaceObjDef.PropertyDef[] Properties => PropertiesForNames.Values.ToArray();
@@ -233,17 +233,12 @@ namespace Tmds.DBus.Objects
                 var retType = method.ReturnType;
                 IsAsync = typeof(Task).IsAssignableFrom(retType);
                 if (IsAsync)
-                {
-                    if (retType == typeof(Task))
-                        retType = typeof(void);
-                    else
-                        retType = retType.GetGenericArguments()[0];
-                }
+                    retType = (retType == typeof(Task)) ? typeof(void) : retType.GetGenericArguments()[0];
                 if (retType == typeof(void))
                     ReturnTypes = new ArgDef[0];
                 else
                 {
-                    if (retType.IsGenericType && retType.Name.StartsWith("ValueTuple'"))
+                    if (retType.IsGenericType && retType.Name.StartsWith("ValueTuple'", StringComparison.Ordinal))
                     {
                         // Need to split tuple parts up into individual arguments in reply
                         // Set retArgNames

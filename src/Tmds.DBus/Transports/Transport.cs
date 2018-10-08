@@ -16,7 +16,7 @@ using Tmds.DBus.Protocol;
 
 namespace Tmds.DBus.Transports
 {
-    internal class Transport : IMessageStream
+    public class Transport : IMessageStream
     {
         private struct PendingSend
         {
@@ -27,9 +27,9 @@ namespace Tmds.DBus.Transports
         private static readonly byte[] _oneByteArray = new[] { (byte)0 };
         private readonly byte[] _headerReadBuffer = new byte[16];
         private readonly List<UnixFd> _fileDescriptors = new List<UnixFd>();
-        private TransportSocket _socket;
-        private ConcurrentQueue<PendingSend> _sendQueue;
-        private SemaphoreSlim _sendSemaphore;
+        private readonly TransportSocket _socket;
+        private readonly ConcurrentQueue<PendingSend> _sendQueue;
+        private readonly SemaphoreSlim _sendSemaphore;
 
         public static async Task<IMessageStream> ConnectAsync(AddressEntry entry, ClientSetupResult connectionContext, CancellationToken cancellationToken)
         {
@@ -55,7 +55,7 @@ namespace Tmds.DBus.Transports
             return transport;
         }
 
-        private Transport(TransportSocket socket)
+        public Transport(TransportSocket socket)
         {
             _socket = socket;
             _sendQueue = new ConcurrentQueue<PendingSend>();

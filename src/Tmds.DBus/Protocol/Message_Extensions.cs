@@ -35,17 +35,19 @@ namespace Tmds.DBus.Protocol
 
         public static void WriteObjs(this Message msg, IEnumerable<(object Obj, Type Type)> objs)
         {
-            if (objs.Any())
+            var sig = new Signature();
+            var writer = new MessageWriter();
+            bool any = false;
+            foreach (var obj in objs)
             {
-                var sig = new Signature();
-                var writer = new MessageWriter();
-                foreach (var obj in objs)
-                {
-                    var t = obj.Type ?? obj.Obj.GetType();
-                    var sigPart = Signature.GetSig(t);
-                    sig = Signature.Concat(sig, sigPart);
-                    writer.Write(t, obj.Obj);
-                }
+                any = true;
+                var t = obj.Type ?? obj.Obj.GetType();
+                var sigPart = Signature.GetSig(t);
+                sig = Signature.Concat(sig, sigPart);
+                writer.Write(t, obj.Obj);
+            }
+            if (any)
+            {
                 msg.Body = writer.ToArray();
                 msg.Header.Signature = sig;
             }

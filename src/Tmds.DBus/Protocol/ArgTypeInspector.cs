@@ -94,15 +94,16 @@ namespace Tmds.DBus.Protocol
                                   where interfTypeinfo.IsGenericType && interfTypeinfo.GetGenericTypeDefinition() == s_ienumerableGenricType
                                   select interfTypeinfo;
 
-            var enumerableCount = enumerableTypes.Count();
-            if (enumerableCount == 1)
+            var first = enumerableTypes.FirstOrDefault();
+            if (first != null)
             {
-                elementType = enumerableTypes.First().GenericTypeArguments[0];
-                return InspectElementType(elementType);
-            }
-            else if (enumerableCount > 1)
-            {
-                throw new ArgumentException($"Cannot determine element type of enumerable type '$type.FullName'");
+                if (!enumerableTypes.Skip(1).Any()) // Only 1
+                {
+                    elementType = first.GenericTypeArguments[0];
+                    return InspectElementType(elementType);
+                }
+                else
+                    throw new ArgumentException($"Cannot determine element type of enumerable type '$type.FullName'");
             }
 
 #if false
@@ -247,12 +248,12 @@ namespace Tmds.DBus.Protocol
 
         private static bool IsValueTuple(TypeInfo typeInfo)
         {
-            return typeInfo.IsGenericType && typeInfo.Name.StartsWith("ValueTuple`");
+            return typeInfo.IsGenericType && typeInfo.Name.StartsWith("ValueTuple`", StringComparison.Ordinal);
         }
 
         private class StructFieldInfoComparer : IComparer<FieldInfo>
         {
-            private bool _isValueTypleComparer;
+            readonly private bool _isValueTypleComparer;
             public StructFieldInfoComparer(bool isValueTypleComparer)
             {
                 _isValueTypleComparer = isValueTypleComparer;

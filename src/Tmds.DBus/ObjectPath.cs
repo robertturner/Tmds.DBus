@@ -5,6 +5,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Linq;
 
 namespace Tmds.DBus
 {
@@ -26,23 +27,24 @@ namespace Tmds.DBus
         {
             if (parts == null)
                 throw new ArgumentNullException(nameof(parts));
-            foreach (var part in parts)
+            var partsList = parts.ToList();
+            foreach (var part in partsList)
             {
                 var subPart = '/' + part;
                 Validate(subPart);
                 if (new ObjectPath(subPart).Decomposed.Length > 1)
                     throw new ArgumentException("One of the parts has multiple subparts");
             }
-            var value = '/' + string.Join("/", parts);
+            var value = '/' + string.Join("/", partsList);
             Validate(value);
-            this.Value = value;
+            Value = value;
         }
 
         static void Validate(string value)
         {
-            if (!value.StartsWith("/"))
+            if (!value.StartsWith("/", StringComparison.Ordinal))
                 throw new ArgumentException("value");
-            if (value.EndsWith("/") && value.Length > 1)
+            if (value.EndsWith("/", StringComparison.Ordinal) && value.Length > 1)
                 throw new ArgumentException("ObjectPath cannot end in '/'");
 
             bool multipleSlash = false;

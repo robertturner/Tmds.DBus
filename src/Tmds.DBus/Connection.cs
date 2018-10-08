@@ -61,9 +61,9 @@ namespace Tmds.DBus
             baseConnection.SetResult(connection);
             try
             {
-                IConnection_Extensions.RegisterObject(this, properties ?? (properties = new Properties(this)), null);
-                IConnection_Extensions.RegisterObject(this, (introspectable = new Introspectable(this)), null);
-                IConnection_Extensions.RegisterObject(this, peer ?? (peer = new Peer()), null);
+                this.RegisterObject(properties ?? (properties = new Properties(this)), null);
+                this.RegisterObject((introspectable = new Introspectable(this)), null);
+                this.RegisterObject(peer ?? (peer = new Peer()), null);
             }
             catch (Exception)
             {
@@ -122,11 +122,8 @@ namespace Tmds.DBus
                     writer.WriteInterfaceEnd();
                 }
                 var children = Connection.BaseDBusConnection.RegisteredPathChildren(path);
-                if (children.Any())
-                {
-                    foreach (var child in children)
-                        writer.WriteChildNode(child);
-                }
+                foreach (var child in children)
+                    writer.WriteChildNode(child);
                 writer.WriteNodeEnd();
                 return Task.FromResult(writer.ToString());
             }
@@ -245,221 +242,6 @@ namespace Tmds.DBus
             if (BaseDBusConnection != null && BaseDBusConnection.IsDisposed)
                 throw new ObjectDisposedException("this");
         }
-
-#if false
-        public async Task<bool> UnregisterServiceAsync(string serviceName)
-        {
-            var reply = await _dbusConnection.ReleaseNameAsync(serviceName);
-            return reply == ReleaseNameReply.ReplyReleased;
-        }
-
-        public async Task QueueServiceRegistrationAsync(string serviceName, Action onAquired = null, Action onLost = null, ServiceRegistrationOptions options = ServiceRegistrationOptions.Default)
-        {
-            if (!options.HasFlag(ServiceRegistrationOptions.AllowReplacement) && (onLost != null))
-            {
-                throw new ArgumentException($"{nameof(onLost)} can only be set when {nameof(ServiceRegistrationOptions.AllowReplacement)} is also set", nameof(onLost));
-            }
-
-            RequestNameOptions requestOptions = RequestNameOptions.None;
-            if (options.HasFlag(ServiceRegistrationOptions.ReplaceExisting))
-            {
-                requestOptions |= RequestNameOptions.ReplaceExisting;
-            }
-            if (options.HasFlag(ServiceRegistrationOptions.AllowReplacement))
-            {
-                requestOptions |= RequestNameOptions.AllowReplacement;
-            }
-            var reply = await _dbusConnection.RequestNameAsync(serviceName, requestOptions, onAquired, onLost, SynchronizationContext.Current);
-            switch (reply)
-            {
-                case RequestNameReply.PrimaryOwner:
-                case RequestNameReply.InQueue:
-                    return;
-                case RequestNameReply.Exists:
-                case RequestNameReply.AlreadyOwner:
-                default:
-                    throw new ProtocolException("Unexpected reply");
-            }
-        }
-
-        public async Task RegisterServiceAsync(string name, Action onLost = null, ServiceRegistrationOptions options = ServiceRegistrationOptions.Default)
-        {
-            if (!options.HasFlag(ServiceRegistrationOptions.AllowReplacement) && (onLost != null))
-            {
-                throw new ArgumentException($"{nameof(onLost)} can only be set when {nameof(ServiceRegistrationOptions.AllowReplacement)} is also set", nameof(onLost));
-            }
-
-            RequestNameOptions requestOptions = RequestNameOptions.DoNotQueue;
-            if (options.HasFlag(ServiceRegistrationOptions.ReplaceExisting))
-            {
-                requestOptions |= RequestNameOptions.ReplaceExisting;
-            }
-            if (options.HasFlag(ServiceRegistrationOptions.AllowReplacement))
-            {
-                requestOptions |= RequestNameOptions.AllowReplacement;
-            }
-            var reply = await _dbusConnection.RequestNameAsync(name, requestOptions, null, onLost, SynchronizationContext.Current);
-            switch (reply)
-            {
-                case RequestNameReply.PrimaryOwner:
-                    return;
-                case RequestNameReply.Exists:
-                    throw new InvalidOperationException("Service is registered by another connection");
-                case RequestNameReply.AlreadyOwner:
-                    throw new InvalidOperationException("Service is already registered by this connection");
-                case RequestNameReply.InQueue:
-                default:
-                    throw new ProtocolException("Unexpected reply");
-            }
-        }
-
-        public Task<string[]> ListActivatableServicesAsync()
-        {
-            ThrowIfNotConnected();
-            ThrowIfRemoteIsNotBus();
-            return DBus.ListActivatableNamesAsync();
-        }
-
-        public async Task<string> ResolveServiceOwnerAsync(string serviceName)
-        {
-            ThrowIfNotConnected();
-            ThrowIfRemoteIsNotBus();
-            try
-            {
-                return await DBus.GetNameOwnerAsync(serviceName);
-            }
-            catch (DBusException e) when (e.ErrorName == "org.freedesktop.DBus.Error.NameHasNoOwner")
-            {
-                return null;
-            }
-            catch
-            {
-                throw;
-            }
-        }
-
-        public Task<ServiceStartResult> ActivateServiceAsync(string serviceName)
-        {
-            ThrowIfNotConnected();
-            ThrowIfRemoteIsNotBus();
-            return DBus.StartServiceByNameAsync(serviceName, 0);
-        }
-
-        public Task<bool> IsServiceActiveAsync(string serviceName)
-        {
-            ThrowIfNotConnected();
-            ThrowIfRemoteIsNotBus();
-            return DBus.NameHasOwnerAsync(serviceName);
-        }
-
-        public async Task<IDisposable> ResolveServiceOwnerAsync(string serviceName, Action<ServiceOwnerChangedEventArgs> handler)
-        {
-            ThrowIfNotConnected();
-            ThrowIfRemoteIsNotBus();
-            if (serviceName == "*")
-            {
-                serviceName = ".*";
-            }
-
-            var synchronizationContext = SynchronizationContext.Current;
-            bool eventEmitted = false;
-            var wrappedDisposable = new WrappedDisposable();
-            var namespaceLookup = serviceName.EndsWith(".*");
-            var emittedServices = namespaceLookup ? new List<string>() : null;
-
-            wrappedDisposable.Disposable = await _dbusConnection.WatchNameOwnerChangedAsync(serviceName,
-                e => {
-                    bool first = false;
-                    if (namespaceLookup)
-                    {
-                        first = emittedServices?.Contains(e.ServiceName) == false;
-                        emittedServices?.Add(e.ServiceName);
-                    }
-                    else
-                    {
-                        first = eventEmitted == false;
-                        eventEmitted = true;
-                    }
-                    if (first)
-                    {
-                        if (e.NewOwner == null)
-                        {
-                            return;
-                        }
-                        e.OldOwner = null;
-                    }
-                    if (synchronizationContext != null)
-                    {
-                        synchronizationContext.Post(o =>
-                        {
-                            if (!wrappedDisposable.IsDisposed)
-                            {
-                                handler(e);
-                            }
-                        }, null);
-                    }
-                    else
-                    {
-                        if (!wrappedDisposable.IsDisposed)
-                        {
-                            handler(e);
-                        }
-                    }
-                });
-            if (namespaceLookup)
-            {
-                serviceName = serviceName.Substring(0, serviceName.Length - 2);
-            }
-            try
-            {
-                if (namespaceLookup)
-                {
-                    var services = await ListServicesAsync();
-                    foreach (var service in services)
-                    {
-                        if (service.StartsWith(serviceName)
-                         && (   (service.Length == serviceName.Length)
-                             || (service[serviceName.Length] == '.')
-                             || (serviceName.Length == 0 && service[0] != ':')))
-                        {
-                            var currentName = await ResolveServiceOwnerAsync(service);
-                            if (currentName != null && !emittedServices.Contains(serviceName))
-                            {
-                                emittedServices.Add(service);
-                                var e = new ServiceOwnerChangedEventArgs(service, null, currentName);
-                                handler(e);
-                            }
-                        }
-                    }
-                    emittedServices = null;
-                }
-                else
-                {
-                    var currentName = await ResolveServiceOwnerAsync(serviceName);
-                    if (currentName != null && !eventEmitted)
-                    {
-                        eventEmitted = true;
-                        var e = new ServiceOwnerChangedEventArgs(serviceName, null, currentName);
-                        handler(e);
-                    }
-                }
-                return wrappedDisposable;
-            }
-            catch
-            {
-                wrappedDisposable.Dispose();
-                throw;
-            }
-        }
-
-        public Task<string[]> ListServicesAsync()
-        {
-            ThrowIfNotConnected();
-            ThrowIfRemoteIsNotBus();
-
-            return DBus.ListNamesAsync();
-        }
-#endif
 
         /// <summary>
         /// Handle proxy call exceptions

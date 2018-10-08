@@ -34,7 +34,7 @@ namespace Tmds.DBus.Objects
 
         public IDBusConnection DBusConnection { get; set; }
 
-        static ProxyGenerator generator = new ProxyGenerator();
+        static readonly ProxyGenerator generator = new ProxyGenerator();
 
         class DBusObjectBase : IDBusObjectProxy
         {
@@ -68,7 +68,7 @@ namespace Tmds.DBus.Objects
 
             public IDBusObjectProxy ProxyInstance { get; private set; }
 
-            Interceptor interceptor;
+            readonly Interceptor interceptor;
 
             public sealed class Interceptor : IInterceptor, IDisposable
             {
@@ -80,7 +80,7 @@ namespace Tmds.DBus.Objects
                     signals = parent.TypeDescriptor.Signals.ToDictionary(s => s.Name, s => new SignalEntry());
                 }
                 public DBusObjectBase Parent { get; private set; }
-                object @lock = new object();
+                readonly object @lock = new object();
                 public void Dispose()
                 {
                     lock (@lock)
@@ -89,9 +89,9 @@ namespace Tmds.DBus.Objects
                     }
                 }
 
-                IProperties propertyGetter;
+                readonly IProperties propertyGetter;
 
-                Dictionary<string, SignalEntry> signals = new Dictionary<string, SignalEntry>();
+                readonly Dictionary<string, SignalEntry> signals;
                 class SignalEntry
                 {
                     public ConstructorInvoker TupleCreator;
@@ -101,25 +101,25 @@ namespace Tmds.DBus.Objects
 
                 class SigDisposable : IDisposable
                 {
-                    object @lock = new object();
+                    readonly object @lock = new object();
                     Action onDispose;
                     public void Dispose()
                     {
-                        Action onDispose = null;
+                        Action onDisp = null;
                         lock (@lock)
                         {
                             if (IsDisposed)
                                 return;
                             IsDisposed = true;
-                            onDispose = this.onDispose;
+                            onDisp = onDispose;
                         }
-                        onDispose?.Invoke();
+                        onDisp?.Invoke();
                     }
-                    public void Set(Action onDispose)
+                    public void Set(Action onDisp)
                     {
                         lock (@lock)
                         {
-                            this.onDispose = onDispose;
+                            this.onDispose = onDisp;
                         }
                     }
                     public bool IsDisposed { get; private set; }
@@ -143,8 +143,8 @@ namespace Tmds.DBus.Objects
                         if (invocation.Method.IsSpecialName)
                         {
                             var methodName = invocation.Method.Name;
-                            bool isGet = methodName.StartsWith("get_");
-                            if (isGet || methodName.StartsWith("set_"))
+                            bool isGet = methodName.StartsWith("get_", StringComparison.Ordinal);
+                            if (isGet || methodName.StartsWith("set_", StringComparison.Ordinal))
                             {
                                 var propName = methodName.Substring(4);
                                 if (!Parent.TypeDescriptor.PropertiesForNames.TryGetValue(propName, out TypeDescription.PropertyDef propEntry))
@@ -237,7 +237,7 @@ namespace Tmds.DBus.Objects
                             else
                             {
                                 string sigName;
-                                if (invocation.Method.Name.StartsWith("Watch") && ((sigName = invocation.Method.Name.Substring(5)).Length > 0) &&
+                                if (invocation.Method.Name.StartsWith("Watch", StringComparison.Ordinal) && ((sigName = invocation.Method.Name.Substring(5)).Length > 0) &&
                                     Parent.TypeDescriptor.SignalsForNames.TryGetValue(sigName, out TypeDescription.SignalDef s))
                                 {
                                     var sigCont = signals[sigName];
@@ -250,7 +250,7 @@ namespace Tmds.DBus.Objects
                                     if (s.ArgsAsTuple && sigCont.TupleCreator == null)
                                         sigCont.TupleCreator = s.ArgTypes.AsValueTupleCreator();
 
-                                    Action<object[], ProxyContext> cbUnsync = (objs, ctx) =>
+                                    void cbUnsync(object[] objs, ProxyContext ctx)
                                     {
                                         if (ret.IsDisposed)
                                             return;
@@ -270,23 +270,27 @@ namespace Tmds.DBus.Objects
                                         {
                                             objCtx?.SetContext(null);
                                         }
-                                    };
+                                    }
 
                                     var syncCtx = SynchronizationContext.Current;
-                                    Action<object[], ProxyContext> callback = (syncCtx != null) ? ((objs, ctx) => syncCtx.Post(_ => cbUnsync(objs, ctx), null)) : cbUnsync;
+                                    var callback = (syncCtx != null) ? 
+                                        new Action<object[], ProxyContext>(((objs, ctx) => syncCtx.Post(_ => cbUnsync(objs, ctx), null))) : cbUnsync;
 
                                     bool doSubscribe = sigCont.Callbacks == null;
                                     sigCont.Callbacks += callback;
                                     ret.Set(() =>
                                     {
-                                        sigCont.Callbacks -= callback;
-                                        if (sigCont.Callbacks == null && sigCont.Disposer != null)
-                                            sigCont.Disposer();
+                                        if (sigCont.Callbacks != null)
+                                        {
+                                            sigCont.Callbacks -= callback;
+                                            if (sigCont.Callbacks == null && sigCont.Disposer != null)
+                                                sigCont.Disposer();
+                                        }
                                     });
 
                                     if (doSubscribe)
                                     {
-                                        SignalHandler handler = msg =>
+                                        void handler(Message msg)
                                         {
                                             if (!SenderMatches(msg))
                                                 return;
@@ -298,7 +302,7 @@ namespace Tmds.DBus.Objects
                                                     objs = objs.Concat(new object[] { path });
                                                 sigCont.Callbacks(objs.ToArray(), new ProxyContext(Parent.Connection, msg.Header.Path, msg));
                                             }
-                                        };
+                                        }
                                         Parent.Parent.DBusConnection.WatchSignalAsync(handler, Parent.InterfaceName, s.Name, Parent.Service, Parent.ObjectPath)
                                             .ContinueWith(t => sigCont.Disposer = () => t.Result.Dispose());
                                     }
@@ -328,7 +332,7 @@ namespace Tmds.DBus.Objects
         }
 
         Dictionary<(Type type, string interfaceName, ObjectPath path, string serviceName), DBusObjectBase> instances = new Dictionary<(Type type, string interfaceName, ObjectPath path, string serviceName), DBusObjectBase>();
-        object @lock = new object();
+        readonly object @lock = new object();
 
         IDBusObjectProxy IClientObjectProvider.GetInstance(Type type, ObjectPath path, string interfaceName, string serviceName)
         {

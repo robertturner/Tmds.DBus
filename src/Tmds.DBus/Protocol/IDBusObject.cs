@@ -4,7 +4,7 @@
 
 using System;
 
-namespace Tmds.DBus
+namespace Tmds.DBus.Protocol
 {
     public interface IDBusObject
     {

@@ -212,9 +212,9 @@ namespace Tmds.DBus.Objects
         }
 
         readonly Dictionary<string, SigInst> signals = new Dictionary<string, SigInst>();
-        InterfaceInfo ifceInfo;
+        readonly InterfaceInfo ifceInfo;
         Func<Exception, bool> proxyExceptionHandler;
-        ObjectContext contextObj;
+        readonly ObjectContext contextObj;
 
         public string InterfaceName => ifceInfo.InterfaceName;
 
@@ -260,10 +260,9 @@ namespace Tmds.DBus.Objects
             {
                 if (proxyExceptionHandler == null || !proxyExceptionHandler(ex))
                 {
-                    var exForMsg = ex;
                     if (ex is AggregateException aggrEx && aggrEx.InnerExceptions.Count == 1)
-                        exForMsg = aggrEx.InnerException;
-                    replyMsg = MessageHelper.ConstructErrorReply(methodCall, DBusErrors.Failed, exForMsg.Message);
+                        ex = aggrEx.InnerException;
+                    replyMsg = MessageHelper.ConstructErrorReply(methodCall, DBusErrors.Failed, ex.Message);
                 }
                 handled = true;
             }

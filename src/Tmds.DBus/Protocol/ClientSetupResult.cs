@@ -5,7 +5,7 @@
 using System;
 using System.Threading;
 
-namespace Tmds.DBus
+namespace Tmds.DBus.Protocol
 {
     /// <summary>
     /// Result of ClientConnectionOptions.SetupAsync

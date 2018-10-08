@@ -4,6 +4,7 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Tmds.DBus.Objects;
+using Tmds.DBus.Protocol;
 using Xunit;
 using XunitSkip;
 

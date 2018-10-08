@@ -62,14 +62,8 @@ namespace Tmds.DBus.Transports
                 else if (endpoint is UnixDomainSocketEndPoint unixEndPoint)
                 {
                     _serverSocket = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
-                    if (unixEndPoint.Path[0] == '\0')
-                    {
-                        address = $"unix:abstract={unixEndPoint.Path.Substring(1)}";
-                    }
-                    else
-                    {
-                        address = $"unix:path={unixEndPoint.Path}";
-                    }
+                    address = (unixEndPoint.Path[0] == '\0') ? $"unix:abstract={unixEndPoint.Path.Substring(1)}" :
+                        $"unix:path={unixEndPoint.Path}";
                 }
                 _serverSocket.Bind(endpoint);
                 _serverSocket.Listen(10);

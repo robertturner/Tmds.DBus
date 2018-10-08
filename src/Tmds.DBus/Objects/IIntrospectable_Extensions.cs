@@ -6,6 +6,7 @@ using System.Threading.Tasks;
 using System.Xml.Serialization;
 using Tmds.DBus.Protocol;
 using Tmds.DBus.Objects.Internal;
+using Tmds.DBus.Objects.DBus;
 
 namespace Tmds.DBus.Objects
 {

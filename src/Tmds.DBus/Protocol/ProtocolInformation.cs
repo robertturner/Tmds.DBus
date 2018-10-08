@@ -10,7 +10,7 @@ using System.Reflection;
 
 namespace Tmds.DBus.Protocol
 {
-    internal static class ProtocolInformation
+    public static class ProtocolInformation
     {
         //protocol versions
         public const byte Version = 1;
@@ -22,9 +22,9 @@ namespace Tmds.DBus.Protocol
         public const uint MaxStructDepth = 32;
 
         //this is not strictly related to Protocol since names are passed around as strings
-        internal const uint MaxNameLength = 255;
-        internal const uint MaxMatchRuleLength = 1024;
-        internal const uint MaxMatchRuleArgs = 64;
+        public const uint MaxNameLength = 255;
+        public const uint MaxMatchRuleLength = 1024;
+        public const uint MaxMatchRuleArgs = 64;
 
         public static int PadNeeded (int pos, int alignment)
         {

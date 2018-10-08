@@ -12,6 +12,7 @@ using System.Collections.Generic;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using BaseLibs.Types;
+using BaseLibs.Collections;
 
 namespace Tmds.DBus.Protocol
 {
@@ -23,7 +24,7 @@ namespace Tmds.DBus.Protocol
         private int _pos = 0;
         private bool _skipNextStructPadding = false;
 
-        static Dictionary<Type, bool> s_isPrimitiveStruct = new Dictionary<Type, bool> ();
+        static readonly Dictionary<Type, bool> s_isPrimitiveStruct = new Dictionary<Type, bool> ();
 
         public MessageReader(EndianFlag endianness, ArraySegment<byte> data)
         {
@@ -56,7 +57,7 @@ namespace Tmds.DBus.Protocol
         delegate T ReadHandler<T>(MessageReader reader);
         delegate object ReadHandler(MessageReader reader);
 
-        static Dictionary<Type, ReadHandler> objHandlers = new Dictionary<Type, ReadHandler>
+        static readonly Dictionary<Type, ReadHandler> objHandlers = new Dictionary<Type, ReadHandler>
         {
             { typeof(bool), r => r.ReadBoolean() },
             { typeof(byte), r => r.ReadByte() },
@@ -74,7 +75,7 @@ namespace Tmds.DBus.Protocol
             { typeof(object), r => r.ReadVariant() },
             { typeof(IDBusObject), r => r.ReadBusObject() }
         };
-        static Dictionary<Type, object> genHandlersCache = new Dictionary<Type, object>
+        static readonly Dictionary<Type, object> genHandlersCache = new Dictionary<Type, object>
         {
             { typeof(bool), new ReadHandler<bool>(r => r.ReadBoolean()) },
             { typeof(byte), new ReadHandler<byte>(r => r.ReadByte()) },
@@ -92,6 +93,16 @@ namespace Tmds.DBus.Protocol
             { typeof(object), new ReadHandler<object>(r => r.ReadVariant()) },
             { typeof(IDBusObject), new ReadHandler<IDBusObject>(r => r.ReadBusObject()) }
         };
+
+        static readonly Dictionary<Type, (FieldInfo[] fis, Lazy<MemberSetter[]> getters)> structAccessorCache = new Dictionary<Type, (FieldInfo[] fields, Lazy<MemberSetter[]> getters)>();
+        (FieldInfo[] fis, Lazy<MemberSetter[]> getters) GetStructFieldSetters(Type type)
+        {
+            return structAccessorCache.GetOrSet(type, () =>
+            {
+                FieldInfo[] fis = ArgTypeInspector.GetStructFields(type);
+                return (fis, new Lazy<MemberSetter[]>(() => fis.Select(fi => fi.DelegateForSetField()).ToArray()));
+            });
+        }
 
         static void AddTypeHandler(Type type, MethodInfo methodInfo)
         {
@@ -168,15 +179,10 @@ namespace Tmds.DBus.Protocol
         {
             int count = Marshal.SizeOf<T>();
             ReadPad(count);
-
             if (_data.Count < _pos + count)
                 throw new ProtocolException("Cannot read beyond end of data");
-
-            T val;
-            if (_endianness == Environment.NativeEndianness)
-                val = converter(_data.Array, _data.Offset + _pos);
-            else
-                val = converter(EndianSwap(_data.Array, _data.Offset + _pos, count), 0);
+            T val = (_endianness == Environment.NativeEndianness) ? converter(_data.Array, _data.Offset + _pos) :
+                converter(EndianSwap(_data.Array, _data.Offset + _pos, count), 0);
             _pos += count;
             return val;
         }
@@ -189,7 +195,6 @@ namespace Tmds.DBus.Protocol
         public bool ReadBoolean()
         {
             uint intval = ReadUInt32();
-
             switch (intval)
             {
                 case 0:
@@ -201,79 +206,44 @@ namespace Tmds.DBus.Protocol
             }
         }
 
-        public short ReadInt16 ()
-        {
-            return MarshalTo(BitConverter.ToInt16);
-        }
+        public short ReadInt16() => MarshalTo(BitConverter.ToInt16);
 
-        public ushort ReadUInt16 ()
-        {
-            return MarshalTo(BitConverter.ToUInt16);
-        }
+        public ushort ReadUInt16() => MarshalTo(BitConverter.ToUInt16);
 
-        public int ReadInt32 ()
-        {
-            return MarshalTo(BitConverter.ToInt32);
-        }
+        public int ReadInt32() => MarshalTo(BitConverter.ToInt32);
 
-        public uint ReadUInt32 ()
-        {
-            return MarshalTo(BitConverter.ToUInt32);
-        }
+        public uint ReadUInt32() => MarshalTo(BitConverter.ToUInt32);
 
-        public long ReadInt64 ()
-        {
-            return MarshalTo(BitConverter.ToInt64);
-        }
+        public long ReadInt64() => MarshalTo(BitConverter.ToInt64);
 
-        public ulong ReadUInt64 ()
-        {
-            return MarshalTo(BitConverter.ToUInt64);
-        }
+        public ulong ReadUInt64() => MarshalTo(BitConverter.ToUInt64);
 
-        public float ReadSingle ()
-        {
-            return MarshalTo(BitConverter.ToSingle);
-        }
+        public float ReadSingle() => MarshalTo(BitConverter.ToSingle);
 
-        public double ReadDouble ()
-        {
-            return MarshalTo(BitConverter.ToDouble);
-        }
+        public double ReadDouble() => MarshalTo(BitConverter.ToDouble);
 
-        public string ReadString ()
+        public string ReadString()
         {
             uint ln = ReadUInt32 ();
-
-            string val = Encoding.UTF8.GetString (_data.Array, _data.Offset + _pos, (int)ln);
+            string val = Encoding.UTF8.GetString(_data.Array, _data.Offset + _pos, (int)ln);
             _pos += (int)ln;
             ReadNull ();
-
             return val;
         }
 
-        public void SkipString()
-        {
-            ReadString();
-        }
+        public void SkipString() => ReadString();
 
-        public ObjectPath ReadObjectPath ()
-        {
-            //exactly the same as string
-            return new ObjectPath (ReadString ());
-        }
+        public ObjectPath ReadObjectPath() => new ObjectPath(ReadString());
 
-        public IDBusObject ReadBusObject()
-        {
-            return new BusObject(ReadObjectPath());
-        }
+        public IDBusObject ReadBusObject() => new BusObject(ReadObjectPath());
 
-        public Signature ReadSignature ()
+        public Signature ReadSignature()
         {
-            byte ln = ReadByte ();
+            byte ln = ReadByte();
 
             // Avoid an array allocation for small signatures
-            if (ln == 1) {
+            if (ln == 1)
+            {
                 DType dtype = (DType)ReadByte ();
                 ReadNull ();
                 return new Signature (dtype);
@@ -290,7 +260,7 @@ namespace Tmds.DBus.Protocol
             return Signature.Take (sigData);
         }
 
-        public object ReadVariant ()
+        public object ReadVariant()
         {
             var sig = ReadSignature ();
             if (!sig.IsSingleCompleteType)
@@ -301,9 +271,9 @@ namespace Tmds.DBus.Protocol
         public T ReadDictionaryObject<T>()
         {
             var type = typeof(T);
-            FieldInfo[] fis = type.GetFields (BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+            FieldInfo[] fis = type.GetFields(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
 
-            object val = Activator.CreateInstance (type);
+            var val = Activator.CreateInstance(type);
 
             uint ln = ReadUInt32 ();
             if (ln > ProtocolInformation.MaxArrayLength)
@@ -313,7 +283,8 @@ namespace Tmds.DBus.Protocol
 
             int endPos = _pos + (int)ln;
 
-            while (_pos < endPos) {
+            while (_pos < endPos)
+            {
                 ReadPad (8);
 
                 var key = ReadString();
@@ -322,7 +293,7 @@ namespace Tmds.DBus.Protocol
                 if (!sig.IsSingleCompleteType)
                     throw new InvalidOperationException (string.Format ("ReadVariant need a single complete type signature, {0} was given", sig.ToString ()));
 
-                var field = fis.Where(f => f.Name.EndsWith(key) &&
+                var field = fis.Where(f => f.Name.EndsWith(key, StringComparison.Ordinal) &&
                                             ((f.Name.Length == key.Length) ||
                                              (f.Name.Length == key.Length + 1 && f.Name[0] == '_'))).SingleOrDefault();
 
@@ -332,28 +303,20 @@ namespace Tmds.DBus.Protocol
                 }
                 else
                 {
-                    Type fieldType;
-                    string propertyName;
-                    PropertyTypeInspector.InspectField(field, out propertyName, out fieldType);
-
+                    PropertyTypeInspector.InspectField(field, out string propertyName, out Type fieldType);
                     if (sig != Signature.GetSig(fieldType))
-                    {
                         throw new ArgumentException($"Dictionary '{type.FullName}' field '{field.Name}' with type '{fieldType.FullName}' cannot be read from D-Bus type '{sig}'");
-                    }
-
                     var readValue = Read(fieldType);
-
-                    field.SetValue (val, readValue);
+                    field.SetValue(val, readValue);
                 }
             }
 
             if (_pos != endPos)
                 throw new ProtocolException("Read pos " + _pos + " != ep " + endPos);
-
             return (T)val;
         }
 
-        public Dictionary<TKey, TValue> ReadDictionary<TKey, TValue> ()
+        public Dictionary<TKey, TValue> ReadDictionary<TKey, TValue>()
         {
             uint ln = ReadUInt32 ();
 
@@ -368,11 +331,12 @@ namespace Tmds.DBus.Protocol
             var keyReader = ReaderForType<TKey>();
             var valueReader = ReaderForType<TValue>();
 
-            while (_pos < endPos) {
+            while (_pos < endPos)
+            {
                 ReadPad (8);
                 TKey k = keyReader(this);
                 TValue v = valueReader(this);
-                val.Add (k, v);
+                val.Add(k, v);
             }
 
             if (_pos != endPos)
@@ -381,10 +345,10 @@ namespace Tmds.DBus.Protocol
             return val;
         }
 
-        public T[] ReadArray<T> ()
+        public T[] ReadArray<T>()
         {
             uint ln = ReadUInt32 ();
-            Type elemType = typeof (T);
+            Type elemType = typeof(T);
 
             if (ln > ProtocolInformation.MaxArrayLength)
                 throw new ProtocolException("Array length " + ln + " exceeds maximum allowed " + ProtocolInformation.MaxArrayLength + " bytes");
@@ -404,13 +368,10 @@ namespace Tmds.DBus.Protocol
             int endPos = _pos + (int)ln;
 
             var elementReader = ReaderForType<T>();
-
             while (_pos < endPos)
-                list.Add (elementReader(this));
-
+                list.Add(elementReader(this));
             if (_pos != endPos)
                 throw new ProtocolException("Read pos " + _pos + " != ep " + endPos);
-
             return list.ToArray ();
         }
 
@@ -427,21 +388,17 @@ namespace Tmds.DBus.Protocol
                 DirectCopy (sof, length, handle);
                 handle.Free ();
             }
-
             return array;
         }
 
-        void DirectCopy (int sof, uint length, GCHandle handle)
-        {
-            DirectCopy (sof, length, handle.AddrOfPinnedObject ());
-        }
+        void DirectCopy(int sof, uint length, GCHandle handle) => DirectCopy(sof, length, handle.AddrOfPinnedObject());
 
-        void DirectCopy (int sof, uint length, IntPtr handle)
+        void DirectCopy(int sof, uint length, IntPtr handle)
         {
             if (_endianness == Environment.NativeEndianness)
-                Marshal.Copy (_data.Array, _data.Offset + _pos, handle, (int)length);
+                Marshal.Copy(_data.Array, _data.Offset + _pos, handle, (int)length);
             else
-                Marshal.Copy (EndianSwap(_data.Array, _data.Offset + _pos, (int)length), 0, handle, (int)length);
+                Marshal.Copy(EndianSwap(_data.Array, _data.Offset + _pos, (int)length), 0, handle, (int)length);
             _pos += (int)length * sof;
         }
 
@@ -453,73 +410,51 @@ namespace Tmds.DBus.Protocol
             return array;
         }
 
-        public object ReadStruct (Type type)
+        public object ReadStruct(Type type)
         {
             if (!_skipNextStructPadding)
-            {
                 ReadPad (8);
-            }
             _skipNextStructPadding = false;
 
-            FieldInfo[] fis = ArgTypeInspector.GetStructFields(type);
-
+            var (fis, getters) = GetStructFieldSetters(type);
             // Empty struct? No need for processing
             if (fis.Length == 0)
-                return Activator.CreateInstance (type);
+                return Activator.CreateInstance(type);
+            if (IsEligibleStruct(type, fis))
+                return MarshalStruct(type, fis);
 
-            if (IsEligibleStruct (type, fis))
-                return MarshalStruct (type, fis);
-
-            object val = Activator.CreateInstance (type);
-
-            foreach (System.Reflection.FieldInfo fi in fis)
-                fi.SetValue (val, Read (fi.FieldType));
-
+            object val = Activator.CreateInstance(type);
+            for (int i = 0; i < fis.Length; ++i)
+            {
+                if (i == 7 && (type.Name == "ValueTuple`8"))
+                    _skipNextStructPadding = true;
+                var fieldVal = Read(fis[i].FieldType);
+                val = getters.Value[i](val, fieldVal);
+            }
             return val;
         }
 
-        public T ReadStruct<T> ()
+        // NEEDED - do not remove!
+        public T ReadStruct<T>() => (T)ReadStruct(typeof(T));
+
+        object MarshalStruct(Type structType, FieldInfo[] fis)
         {
-            if (!_skipNextStructPadding)
-                ReadPad (8);
-            _skipNextStructPadding = false;
-
-            var fis = ArgTypeInspector.GetStructFields(typeof(T));
-
-            // Empty struct? No need for processing
-            if (fis.Length == 0)
-                return default (T);
-
-            if (IsEligibleStruct (typeof(T), fis))
-                return (T)MarshalStruct (typeof(T), fis);
-
-            object val = Activator.CreateInstance<T> ();
-
-            foreach (System.Reflection.FieldInfo fi in fis)
-                fi.SetValue (val, Read (fi.FieldType));
-
-            return (T)val;
-        }
-
-        object MarshalStruct (Type structType, FieldInfo[] fis)
-        {
-            object strct = Activator.CreateInstance (structType);
-            int sof = Marshal.SizeOf (fis[0].FieldType);
-            GCHandle handle = GCHandle.Alloc (strct, GCHandleType.Pinned);
-            DirectCopy (sof, (uint)(fis.Length * sof), handle);
-            handle.Free ();
-
+            object strct = Activator.CreateInstance(structType);
+            int sof = Marshal.SizeOf(fis[0].FieldType);
+            GCHandle handle = GCHandle.Alloc(strct, GCHandleType.Pinned);
+            DirectCopy(sof, (uint)(fis.Length * sof), handle);
+            handle.Free();
             return strct;
         }
 
-        public void ReadNull ()
+        public void ReadNull()
         {
             if (_data.Array[_data.Offset + _pos] != 0)
                 throw new ProtocolException("Read non-zero byte at position " + _pos + " while expecting null terminator");
             _pos++;
         }
 
-        public void ReadPad (int alignment)
+        public void ReadPad(int alignment)
         {
             for (int endPos = ProtocolInformation.Padded (_pos, alignment) ; _pos != endPos ; _pos++)
                 if (_data.Array[_data.Offset + _pos] != 0)
@@ -528,7 +463,7 @@ namespace Tmds.DBus.Protocol
 
         // If a struct is only composed of primitive type fields (i.e. blittable types)
         // then this method return true. Result is cached in isPrimitiveStruct dictionary.
-        internal static bool IsEligibleStruct (Type structType, FieldInfo[] fields)
+        internal static bool IsEligibleStruct(Type structType, FieldInfo[] fields)
         {
             lock (s_isPrimitiveStruct)
             {

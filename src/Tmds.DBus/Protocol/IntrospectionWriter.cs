@@ -9,7 +9,7 @@ namespace Tmds.DBus.Protocol
 {
     internal class IntrospectionWriter
     {
-        private StringBuilder _sb = new StringBuilder();
+        private readonly StringBuilder _sb = new StringBuilder();
         public void WriteDocType()
         {
             _sb.Append("<!DOCTYPE node PUBLIC \"-//freedesktop//DTD D-BUS Object Introspection 1.0//EN\"\n");

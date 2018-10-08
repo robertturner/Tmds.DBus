@@ -12,7 +12,7 @@ using System.Threading.Tasks;
 
 namespace Tmds.DBus.Transports
 {
-    internal class AddressEntry
+    public class AddressEntry
     {
         public static AddressEntry[] ParseEntries(string addresses)
         {
@@ -89,18 +89,9 @@ namespace Tmds.DBus.Transports
         {
             if (str == null)
                 return String.Empty;
-
-            StringBuilder sb = new StringBuilder();
-            int len = str.Length;
-            int i = 0;
-            while (i != len)
-            {
-                if (IsHexEncoding(str, i))
-                    sb.Append(HexUnescape(str, ref i));
-                else
-                    sb.Append(str[i++]);
-            }
-
+            var sb = new StringBuilder();
+            for (int i = 0;  i < str.Length; )
+                sb.Append(IsHexEncoding(str, i) ? HexUnescape(str, ref i) : str[i++]);
             return sb.ToString();
         }
 
@@ -270,10 +261,8 @@ namespace Tmds.DBus.Transports
                     }
                 case "unix":
                     {
-                        string path;
                         bool abstr;
-
-                        if (Properties.TryGetValue("path", out path))
+                        if (Properties.TryGetValue("path", out string path))
                             abstr = false;
                         else if (Properties.TryGetValue("abstract", out path))
                             abstr = true;

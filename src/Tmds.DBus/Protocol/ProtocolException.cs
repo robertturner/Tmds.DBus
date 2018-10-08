@@ -4,17 +4,17 @@
 
 using System;
 
-namespace Tmds.DBus
+namespace Tmds.DBus.Protocol
 {
     public class ProtocolException : Exception
     {
-        internal ProtocolException()
+        public ProtocolException()
         {}
 
-        internal ProtocolException(string message) : base(message)
+        public ProtocolException(string message) : base(message)
         {}
 
-        internal ProtocolException(string message, Exception innerException) : base(message, innerException)
+        public ProtocolException(string message, Exception innerException) : base(message, innerException)
         {}
     }
 }

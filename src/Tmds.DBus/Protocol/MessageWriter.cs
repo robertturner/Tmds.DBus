@@ -19,8 +19,8 @@ namespace Tmds.DBus.Protocol
 {
     public sealed class MessageWriter
     {
-        EndianFlag endianness;
-        MemoryStream stream;
+        readonly EndianFlag endianness;
+        readonly MemoryStream stream;
         bool _skipNextStructPadding;
 
         static readonly Encoding stringEncoding = Encoding.UTF8;
@@ -98,7 +98,7 @@ namespace Tmds.DBus.Protocol
             return (WriteHandler<T>)genHandlersCache[EnsureWriterForType(typeof(T))];
         }
 
-        static Dictionary<Type, WriteHandler> objHandlers = new Dictionary<Type, WriteHandler>
+        static readonly Dictionary<Type, WriteHandler> objHandlers = new Dictionary<Type, WriteHandler>
         {
             { typeof(bool), (w, v) => w.WriteBoolean((bool)v) },
             { typeof(byte), (w, v) => w.WriteByte((byte)v) },
@@ -116,7 +116,7 @@ namespace Tmds.DBus.Protocol
             { typeof(object), (w, v) => w.WriteVariant(v) },
             { typeof(IDBusObject), (w, v) => w.WriteBusObject((IDBusObject)v) }
         };
-        static Dictionary<Type, object> genHandlersCache = new Dictionary<Type, object>
+        static readonly Dictionary<Type, object> genHandlersCache = new Dictionary<Type, object>
         {
             { typeof(bool), new WriteHandler<bool>((w, v) => w.WriteBoolean(v)) },
             { typeof(byte), new WriteHandler<byte>((w, v) => w.WriteByte(v)) },
@@ -147,12 +147,6 @@ namespace Tmds.DBus.Protocol
             var m = WriterForType(type);
             m(this, val);
         }
-        /*public void Write(IEnumerable<Type> types, IEnumerable<object> vals)
-        {
-
-            var m = WriterForType(type);
-            m(this, val);
-        }*/
 
         #region Writers
 
