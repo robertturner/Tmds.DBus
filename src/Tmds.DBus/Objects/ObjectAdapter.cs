@@ -145,7 +145,8 @@ namespace Tmds.DBus.Objects
 
             var objType = instance.GetType();
 
-            ifceInfo = ifceCache.GetOrSet(new Tuple<Type, string, MemberExposure>(objType, interfaceName, exposure), () => InfoForIfce(objType, interfaceName, exposure));
+            lock (ifceCache)
+                ifceInfo = ifceCache.GetOrSet(new Tuple<Type, string, MemberExposure>(objType, interfaceName, exposure), () => InfoForIfce(objType, interfaceName, exposure));
             
             // Register signals
             foreach (var sig in ifceInfo.Descriptor.SignalsForNames)

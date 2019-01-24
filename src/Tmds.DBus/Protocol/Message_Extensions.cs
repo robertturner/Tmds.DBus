@@ -12,12 +12,11 @@ namespace Tmds.DBus.Protocol
         {
             var reader = new MessageReader(msg);
             if (!msg.Header.Signature.HasValue)
-                yield break;
+                return Enumerable.Empty<object>();
             var sig = msg.Header.Signature.Value;
-            foreach(var sigPart in sig.GetParts())
-                yield return reader.Read(sigPart.ToType());
+            return sig.GetParts().Select(p => reader.Read(p.ToType()));
         }
-        public static IEnumerable<object> GetObjs(this Message msg, Type[] types)
+        public static IEnumerable<object> GetObjs(this Message msg, params Type[] types)
         {
             var reader = new MessageReader(msg);
             if (!msg.Header.Signature.HasValue)

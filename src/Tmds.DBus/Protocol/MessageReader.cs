@@ -57,6 +57,7 @@ namespace Tmds.DBus.Protocol
         delegate T ReadHandler<T>(MessageReader reader);
         delegate object ReadHandler(MessageReader reader);
 
+        static readonly object objHandlersLock = new object();
         static readonly Dictionary<Type, ReadHandler> objHandlers = new Dictionary<Type, ReadHandler>
         {
             { typeof(bool), r => r.ReadBoolean() },
@@ -95,29 +96,28 @@ namespace Tmds.DBus.Protocol
         };
 
         static readonly Dictionary<Type, (FieldInfo[] fis, Lazy<MemberSetter[]> getters)> structAccessorCache = new Dictionary<Type, (FieldInfo[] fields, Lazy<MemberSetter[]> getters)>();
+        static readonly object structAccessorCacheLock = new object();
         (FieldInfo[] fis, Lazy<MemberSetter[]> getters) GetStructFieldSetters(Type type)
         {
-            return structAccessorCache.GetOrSet(type, () =>
+            lock (structAccessorCacheLock)
             {
-                FieldInfo[] fis = ArgTypeInspector.GetStructFields(type);
-                return (fis, new Lazy<MemberSetter[]>(() => fis.Select(fi => fi.DelegateForSetField()).ToArray()));
-            });
-        }
-
-        static void AddTypeHandler(Type type, MethodInfo methodInfo)
-        {
-            var d = methodInfo.CreateCustomDelegate<ReadHandler>();
-            objHandlers[type] = d;
-            genHandlersCache[type] = methodInfo.CreateDelegate(typeof(ReadHandler<>).MakeGenericType(type));
+                return structAccessorCache.GetOrSet(type, () =>
+                {
+                    FieldInfo[] fis = ArgTypeInspector.GetStructFields(type);
+                    return (fis, new Lazy<MemberSetter[]>(() => fis.Select(fi => fi.DelegateForSetField()).ToArray()));
+                });
+            }
         }
 
         static ReadHandler<T> ReaderForType<T>()
         {
-            return (ReadHandler<T>)genHandlersCache[EnsureReaderForType(typeof(T))];
+            lock (objHandlersLock)
+                return (ReadHandler<T>)genHandlersCache[EnsureReaderForType(typeof(T))];
         }
         static ReadHandler ReaderForType(Type type)
         {
-            return objHandlers[EnsureReaderForType(type)];
+            lock (objHandlersLock)
+                return objHandlers[EnsureReaderForType(type)];
         }
 
         static readonly MethodInfo s_messageReaderReadDictionary = typeof(MessageReader).GetMethod(nameof(MessageReader.ReadDictionary), Type.EmptyTypes);
@@ -130,6 +130,13 @@ namespace Tmds.DBus.Protocol
             if (type.GetTypeInfo().IsEnum)
                 type = Enum.GetUnderlyingType(type);
 
+            void AddTypeHandler(MethodInfo methodInfo)
+            {
+                var d = methodInfo.CreateCustomDelegate<ReadHandler>();
+                objHandlers[type] = d;
+                genHandlersCache[type] = methodInfo.CreateDelegate(typeof(ReadHandler<>).MakeGenericType(type));
+            }
+
             if (objHandlers.ContainsKey(type))
                 return type;
 
@@ -141,27 +148,26 @@ namespace Tmds.DBus.Protocol
             {
                 if (enumerableType == ArgTypeInspector.EnumerableType.GenericDictionary)
                 {
-                    AddTypeHandler(type, s_messageReaderReadDictionary.MakeGenericMethod(elementType.GenericTypeArguments));
+                    AddTypeHandler(s_messageReaderReadDictionary.MakeGenericMethod(elementType.GenericTypeArguments));
                     return type;
                 }
                 else if (enumerableType == ArgTypeInspector.EnumerableType.AttributeDictionary)
                 {
-                    AddTypeHandler(type, s_messageReaderReadDictionaryObject.MakeGenericMethod(type));
+                    AddTypeHandler(s_messageReaderReadDictionaryObject.MakeGenericMethod(type));
                     return type;
                 }
                 else // Enumerable, EnumerableKeyValuePair
                 {
-                    AddTypeHandler(type, s_messageReaderReadArray.MakeGenericMethod(new[] { elementType }));
+                    AddTypeHandler(s_messageReaderReadArray.MakeGenericMethod(new[] { elementType }));
                     return type;
                 }
             }
 
             if (ArgTypeInspector.IsStructType(type))
             {
-                AddTypeHandler(type, s_messageReaderReadStruct.MakeGenericMethod(type));
+                AddTypeHandler(s_messageReaderReadStruct.MakeGenericMethod(type));
                 return type;
             }
-
             throw new ArgumentException($"Cannot (de)serialize Type '{type.FullName}'");
         }
 
@@ -268,12 +274,22 @@ namespace Tmds.DBus.Protocol
             return Read(sig.ToType());
         }
 
+        static object TypeConstructorNoArgs(Type type)
+        {
+            Func<object> c;
+            lock (constructorCache)
+                c = constructorCache.GetOrSet(type, () => type.GetParameterlessConstructor());
+            return c();
+        }
+
+        static readonly Dictionary<Type, Func<object>> constructorCache = new Dictionary<Type, Func<object>>();
+        static readonly Dictionary<FieldInfo, MemberSetter> fieldsSetterCache = new Dictionary<FieldInfo, MemberSetter>();
         public T ReadDictionaryObject<T>()
         {
             var type = typeof(T);
             FieldInfo[] fis = type.GetFields(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
 
-            var val = Activator.CreateInstance(type);
+            var val = TypeConstructorNoArgs(type);
 
             uint ln = ReadUInt32 ();
             if (ln > ProtocolInformation.MaxArrayLength)
@@ -307,7 +323,11 @@ namespace Tmds.DBus.Protocol
                     if (sig != Signature.GetSig(fieldType))
                         throw new ArgumentException($"Dictionary '{type.FullName}' field '{field.Name}' with type '{fieldType.FullName}' cannot be read from D-Bus type '{sig}'");
                     var readValue = Read(fieldType);
-                    field.SetValue(val, readValue);
+
+                    MemberSetter fieldSetter;
+                    lock (fieldsSetterCache)
+                        fieldSetter = fieldsSetterCache.GetOrSet(field, () => field.DelegateForSetField());
+                    val = fieldSetter(val, readValue);
                 }
             }
 
@@ -419,11 +439,11 @@ namespace Tmds.DBus.Protocol
             var (fis, getters) = GetStructFieldSetters(type);
             // Empty struct? No need for processing
             if (fis.Length == 0)
-                return Activator.CreateInstance(type);
+                return TypeConstructorNoArgs(type);
             if (IsEligibleStruct(type, fis))
                 return MarshalStruct(type, fis);
 
-            object val = Activator.CreateInstance(type);
+            object val = TypeConstructorNoArgs(type);
             for (int i = 0; i < fis.Length; ++i)
             {
                 if (i == 7 && (type.Name == "ValueTuple`8"))
@@ -439,7 +459,7 @@ namespace Tmds.DBus.Protocol
 
         object MarshalStruct(Type structType, FieldInfo[] fis)
         {
-            object strct = Activator.CreateInstance(structType);
+            object strct = TypeConstructorNoArgs(structType);
             int sof = Marshal.SizeOf(fis[0].FieldType);
             GCHandle handle = GCHandle.Alloc(strct, GCHandleType.Pinned);
             DirectCopy(sof, (uint)(fis.Length * sof), handle);

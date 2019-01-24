@@ -15,15 +15,19 @@ namespace Tmds.DBus
         public DBusException(DBusErrors error, string errorMessage)
             : base($"{error.GetDescription(): errorMessage}")
         {
+            WellknownError = error;
             ErrorName = error.GetDescription();
             ErrorMessage = errorMessage;
         }
-        public DBusException(string errorName, string errorMessage) :
-            base($"{errorName: errorMessage}")
+        public DBusException(string errorName, string errorMessage) 
+            : base($"{errorName: errorMessage}")
         {
+            WellknownError = Enum_Extensions.TryParseFromDescription<DBusErrors>(errorName);
             ErrorName = errorName;
             ErrorMessage = errorMessage;
         }
+
+        public DBusErrors? WellknownError { get; }
 
         public string ErrorName { get; }
 

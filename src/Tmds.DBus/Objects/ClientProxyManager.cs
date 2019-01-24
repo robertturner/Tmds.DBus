@@ -38,11 +38,11 @@ namespace Tmds.DBus.Objects
 
         class DBusObjectBase : IDBusObjectProxy
         {
-            public DBusObjectBase(ClientProxyManager parent, Type type, ObjectPath path, string interfaceName, string service)
+            public DBusObjectBase(ClientProxyManager parent, Type type, TypeDescription typeDescription, ObjectPath path, string interfaceName, string service)
             {
                 Parent = parent;
                 Type = type;
-                TypeDescriptor = TypeDescription.GetDescriptor(Type, MemberExposure.AllInterfaces);
+                TypeDescriptor = typeDescription;
                 ObjectPath = path;
                 InterfaceName = interfaceName;
                 Service = service;
@@ -54,19 +54,19 @@ namespace Tmds.DBus.Objects
 
             public readonly ClientProxyManager Parent;
 
-            public ObjectPath ObjectPath { get; private set; }
+            public ObjectPath ObjectPath { get; }
 
-            public string InterfaceName { get; private set; }
+            public string InterfaceName { get; }
 
-            public string Service { get; private set; }
+            public string Service { get;  }
 
-            public Type Type { get; private set; }
+            public Type Type { get;  }
 
-            public TypeDescription TypeDescriptor { get; private set; }
+            public TypeDescription TypeDescriptor { get; }
 
             public IConnection Connection => Parent.Connection;
 
-            public IDBusObjectProxy ProxyInstance { get; private set; }
+            public IDBusObjectProxy ProxyInstance { get; }
 
             readonly Interceptor interceptor;
 
@@ -74,20 +74,15 @@ namespace Tmds.DBus.Objects
             {
                 public Interceptor(DBusObjectBase parent)
                 {
-                    Parent = parent;
+                    parent_ = parent;
                     if (parent.TypeDescriptor.PropertiesForNames.Count > 0)
                         propertyGetter = parent.Parent.DBusConnection.ProxyProvider.GetInstance<IProperties>(parent.ObjectPath, parent.Service);
                     signals = parent.TypeDescriptor.Signals.ToDictionary(s => s.Name, s => new SignalEntry());
                 }
-                public DBusObjectBase Parent { get; private set; }
-                readonly object @lock = new object();
-                public void Dispose()
-                {
-                    lock (@lock)
-                    {
-                        Parent = null;
-                    }
-                }
+
+                volatile DBusObjectBase parent_;
+                public DBusObjectBase Parent => parent_;
+                public void Dispose() => parent_ = null;
 
                 readonly IProperties propertyGetter;
 
@@ -125,21 +120,22 @@ namespace Tmds.DBus.Objects
                     public bool IsDisposed { get; private set; }
                 }
 
-                private bool SenderMatches(Message message)
-                {
-                    return string.IsNullOrEmpty(message.Header.Sender) ||
-                         string.IsNullOrEmpty(Parent.Service) ||
-                         (Parent.Service[0] != ':' && message.Header.Sender[0] == ':') ||
-                         Parent.Service == message.Header.Sender;
-                }
+                void ThrowEx(string message) => throw new Exception(message);
+                void ThrowArgumentEx(string message) => throw new ArgumentException(message);
 
                 public void Intercept(IInvocation invocation)
                 {
-                    CheckDisposed();
-                    if (invocation.InvocationTarget == Parent)
+                    if (invocation.Method.Name == nameof(IDisposable.Dispose))
+                    {
+                        Dispose();
+                        return;
+                    }
+                    var parent = parent_;
+                    if (invocation.InvocationTarget == parent)
                         invocation.Proceed();
                     else
                     {
+                        CheckDisposed(parent);
                         if (invocation.Method.IsSpecialName)
                         {
                             var methodName = invocation.Method.Name;
@@ -147,26 +143,26 @@ namespace Tmds.DBus.Objects
                             if (isGet || methodName.StartsWith("set_", StringComparison.Ordinal))
                             {
                                 var propName = methodName.Substring(4);
-                                if (!Parent.TypeDescriptor.PropertiesForNames.TryGetValue(propName, out TypeDescription.PropertyDef propEntry))
-                                    throw new Exception($"Property \"{propName}\" not found. Internal bug!");
+                                if (!parent.TypeDescriptor.PropertiesForNames.TryGetValue(propName, out TypeDescription.PropertyDef propEntry))
+                                    ThrowEx($"Property \"{propName}\" not found. Internal bug!");
                                 if (isGet)
                                 {
-                                    var getTask = propertyGetter.Get(Parent.InterfaceName, propName);
+                                    var getTask = propertyGetter.Get(parent.InterfaceName, propName);
                                     getTask.Wait();
                                     invocation.ReturnValue = getTask.Result;
                                 }
                                 else // set
                                 {
-                                    var setTask = propertyGetter.Set(Parent.InterfaceName, propName, invocation.Arguments[0]);
+                                    var setTask = propertyGetter.Set(parent.InterfaceName, propName, invocation.Arguments[0]);
                                     setTask.Wait();
                                 }
                             }
                             else
-                                throw new ArgumentException("Unknown/unexpected special method: " + invocation.Method.Name);
+                                ThrowArgumentEx("Unknown/unexpected special method: " + invocation.Method.Name);
                         }
                         else
                         {
-                            if (Parent.TypeDescriptor.MethodsForInfos.TryGetValue(invocation.Method, out TypeDescription.MethodDef m))
+                            if (parent.TypeDescriptor.MethodsForInfos.TryGetValue(invocation.Method, out TypeDescription.MethodDef m))
                             {
                                 try
                                 {
@@ -180,13 +176,13 @@ namespace Tmds.DBus.Objects
                                         invocation.ReturnValue = null;
                                     var reqMsg = new Message(new Header(MessageType.MethodCall)
                                     {
-                                        Path = Parent.ObjectPath,
-                                        Interface = Parent.InterfaceName,
+                                        Path = parent.ObjectPath,
+                                        Interface = parent.InterfaceName,
                                         Member = m.Name,
-                                        Destination = Parent.Service,
+                                        Destination = parent.Service,
                                     });
                                     reqMsg.WriteObjs(invocation.Arguments, m.ArgTypes);
-                                    Parent.Parent.DBusConnection.CallMethodAsync(reqMsg, checkConnected: false)
+                                    parent.Parent.DBusConnection.CallMethodAsync(reqMsg, checkConnected: false)
                                         .ContinueWith(reply =>
                                         {
                                             if (reply.IsFaulted)
@@ -197,10 +193,22 @@ namespace Tmds.DBus.Objects
 
                                                 // Check returned signature
                                                 bool returnSigGood = false;
+                                                bool wrapInTuple = false;
                                                 if (m.ReturnSignature == Signature.Empty)
                                                     returnSigGood = !replyMsg.Header.Signature.HasValue || (replyMsg.Header.Signature.Value == Signature.Empty);
-                                                else
-                                                    returnSigGood = replyMsg.Header.Signature.HasValue && (replyMsg.Header.Signature.Value == m.ReturnSignature);
+                                                else if (replyMsg.Header.Signature.HasValue)
+                                                {
+                                                    var replySig = replyMsg.Header.Signature.Value;
+                                                    returnSigGood = replySig == m.ReturnSignature;
+                                                    if (!returnSigGood)
+                                                    {
+                                                        if (!replySig.IsSingleCompleteType && m.ReturnSignature.IsSingleCompleteType) 
+                                                        {
+                                                            // Possibly need to wrap multiple return args in tuple (struct)
+                                                            wrapInTuple = returnSigGood = m.ReturnSignature == Signature.MakeStruct(replySig);
+                                                        }
+                                                    }
+                                                }
                                                 if (!returnSigGood)
                                                     ret.SetException(new ReplyArgumentsDifferentFromExpectedException(m.MethodInfo, m.ReturnSignature, replyMsg));
                                                 else
@@ -209,7 +217,16 @@ namespace Tmds.DBus.Objects
                                                         ret.SetResult(true);
                                                     else
                                                     {
-                                                        var objs = replyMsg.GetObjs(new[] { m.ReturnType }).ToArray();
+                                                        object[] objs;
+                                                        if (wrapInTuple)
+                                                        {
+                                                            objs = replyMsg.GetObjs(m.ReturnType.GenericTypeArguments).ToArray(); // ValueTuple<> individual arguments
+                                                            // Rewrap in ValueTuple
+                                                            objs = new object[] { m.ReturnType.GenericTypeArguments.AsValueTupleCreator()(objs) };
+                                                        }
+                                                        else
+                                                            objs = replyMsg.GetObjs(new[] { m.ReturnType }).ToArray();
+
                                                         if (objs.Length == 0)
                                                             ret.SetResult(null);
                                                         else if (objs.Length == 1)
@@ -220,10 +237,11 @@ namespace Tmds.DBus.Objects
                                                 }
                                             }
                                         });
-                                    if (!m.IsAsync && m.HasReturnValue)
+                                    if (!m.IsAsync)
                                     {
                                         ret.Task.Wait();
-                                        invocation.ReturnValue = ret.Task.TryGetAsGenericTask().Result;
+                                        if (m.HasReturnValue)
+                                            invocation.ReturnValue = ret.Task.TryGetAsGenericTask().Result;
                                     }
                                 }
                                 catch (Exception ex)
@@ -238,7 +256,7 @@ namespace Tmds.DBus.Objects
                             {
                                 string sigName;
                                 if (invocation.Method.Name.StartsWith("Watch", StringComparison.Ordinal) && ((sigName = invocation.Method.Name.Substring(5)).Length > 0) &&
-                                    Parent.TypeDescriptor.SignalsForNames.TryGetValue(sigName, out TypeDescription.SignalDef s))
+                                    parent.TypeDescriptor.SignalsForNames.TryGetValue(sigName, out TypeDescription.SignalDef s))
                                 {
                                     var sigCont = signals[sigName];
                                     var ret = new SigDisposable();
@@ -292,7 +310,11 @@ namespace Tmds.DBus.Objects
                                     {
                                         void handler(Message msg)
                                         {
-                                            if (!SenderMatches(msg))
+                                            bool senderMatches = string.IsNullOrEmpty(msg.Header.Sender) ||
+                                                     string.IsNullOrEmpty(parent.Service) ||
+                                                     (parent.Service[0] != ':' && msg.Header.Sender[0] == ':') ||
+                                                     parent.Service == msg.Header.Sender;
+                                            if (!senderMatches)
                                                 return;
                                             if (sigCont.Callbacks != null)
                                             {
@@ -300,25 +322,28 @@ namespace Tmds.DBus.Objects
                                                 var objs = (s.ArgTypes.Length > 0) ? msg.GetObjs(s.ArgTypes) : Enumerable.Empty<object>();
                                                 if (s.LastParamIsPath)
                                                     objs = objs.Concat(new object[] { path });
-                                                sigCont.Callbacks(objs.ToArray(), new ProxyContext(Parent.Connection, msg.Header.Path, msg));
+                                                sigCont.Callbacks(objs.ToArray(), new ProxyContext(parent.Connection, msg.Header.Path, msg));
                                             }
                                         }
-                                        Parent.Parent.DBusConnection.WatchSignalAsync(handler, Parent.InterfaceName, s.Name, Parent.Service, Parent.ObjectPath)
+                                        parent.Parent.DBusConnection.WatchSignalAsync(handler, parent.InterfaceName, s.Name, parent.Service, parent.ObjectPath)
                                             .ContinueWith(t => sigCont.Disposer = () => t.Result.Dispose());
                                     }
                                     invocation.ReturnValue = Task.FromResult<IDisposable>(ret);
                                 }
                                 else
-                                    throw new Exception($"Method \"{invocation.Method.Name}\" not found. Internal bug!");
+                                    ThrowEx($"Method \"{invocation.Method.Name}\" not found. Internal bug!");
                             }
-
-
                         }
                     }
-                    
                 }
 
-                void CheckDisposed() { if (Parent == null) throw new ObjectDisposedException("this"); }
+                void CheckDisposed(DBusObjectBase p = null)
+                {
+                    if (p == null)
+                        p = parent_;
+                    if (p == null)
+                        throw new ObjectDisposedException("this");
+                }
             }
 
             public void Dispose() => interceptor.Dispose();
@@ -326,13 +351,12 @@ namespace Tmds.DBus.Objects
 
         class DBusObjectBase<T> : DBusObjectBase, IDBusObjectProxy<T>
         {
-            public DBusObjectBase(ClientProxyManager parent, Type type, ObjectPath path, string interfaceName, string service)
-                : base(parent, type, path, interfaceName, service)
+            public DBusObjectBase(ClientProxyManager parent, Type type, TypeDescription typeDescription, ObjectPath path, string interfaceName, string service)
+                : base(parent, type, typeDescription, path, interfaceName, service)
             { }
         }
 
-        Dictionary<(Type type, string interfaceName, ObjectPath path, string serviceName), DBusObjectBase> instances = new Dictionary<(Type type, string interfaceName, ObjectPath path, string serviceName), DBusObjectBase>();
-        readonly object @lock = new object();
+        static System.Collections.Concurrent.ConcurrentDictionary<Type, (ConstructorInvoker<DBusObjectBase> constructor, TypeDescription typeDesc)> typeConstructors = new System.Collections.Concurrent.ConcurrentDictionary<Type, (ConstructorInvoker<DBusObjectBase> constructor, TypeDescription typeDesc)>();
 
         IDBusObjectProxy IClientObjectProvider.GetInstance(Type type, ObjectPath path, string interfaceName, string serviceName)
         {
@@ -347,16 +371,11 @@ namespace Tmds.DBus.Objects
             if (!type.IsInterface)
                 throw new ArgumentException("type must be interface");
 
-            lock (@lock)
-            {
-                var inst = instances.GetOrSet((type, interfaceName, path, serviceName), () =>
-                {
-                    var componentType = typeof(DBusObjectBase<>).MakeGenericType(type);
-                    var componentIType = typeof(IDBusObjectProxy<>).MakeGenericType(type);
-                    return (DBusObjectBase)Activator.CreateInstance(componentType, this, type, path, interfaceName, serviceName);
-                });
-                return inst.ProxyInstance;
-            }
+            var (c, td) = typeConstructors.GetOrAdd(type, t =>
+                (typeof(DBusObjectBase<>).MakeGenericType(t).GetConstructors()[0].DelegateForConstructor<DBusObjectBase>(),
+                    TypeDescription.GetDescriptor(t, MemberExposure.AllInterfaces)));
+            var inst = c(this, type, td, path, interfaceName, serviceName);
+            return inst.ProxyInstance;
         }
 
         T IClientObjectProvider.GetInstance<T>(ObjectPath path, string interfaceName, string serviceName)
@@ -374,14 +393,9 @@ namespace Tmds.DBus.Objects
 
         public void Dispose()
         {
-            lock (@lock)
+            var c = Interlocked.Exchange(ref _connection, null);
+            if (c != null)
             {
-                if (_connection == null)
-                    return;
-                _connection = null;
-                foreach (var inst in instances)
-                    inst.Value.Dispose();
-                instances = null;
             }
         }
     }

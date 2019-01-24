@@ -15,21 +15,12 @@ namespace Tmds.DBus.Objects
     {
         public const string DefaultMethodReturnArgName = "value";
 
-        static readonly Dictionary<(Type type, MemberExposure exposure), TypeDescription> typesCache = new Dictionary<(Type type, MemberExposure exposure), TypeDescription>();
-        static readonly object staticLock = new object();
+        static readonly System.Collections.Concurrent.ConcurrentDictionary<(Type type, MemberExposure exposure), TypeDescription> typesCache = new System.Collections.Concurrent.ConcurrentDictionary<(Type type, MemberExposure exposure), TypeDescription>();
 
         public static TypeDescription GetDescriptor(Type type, MemberExposure exposure = MemberExposure.OnlyDBusInterfaces)
         {
-            lock (staticLock)
-            {
-                var accessor = (type, exposure);
-                if (!typesCache.TryGetValue(accessor, out TypeDescription desc))
-                {
-                    desc = new TypeDescription(type, exposure);
-                    typesCache[accessor] = desc;
-                }
-                return desc;
-            }
+            var accessor = (type, exposure);
+            return typesCache.GetOrAdd(accessor, a => new TypeDescription(type, exposure));
         }
 
         public readonly Type Type;

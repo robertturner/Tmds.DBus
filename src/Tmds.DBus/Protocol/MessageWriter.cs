@@ -62,6 +62,13 @@ namespace Tmds.DBus.Protocol
             if (type.GetTypeInfo().IsEnum)
                 type = Enum.GetUnderlyingType(type);
 
+            void AddTypeHandler(MethodInfo methodInfo)
+            {
+                var d = methodInfo.CreateCustomDelegate<WriteHandler>();
+                objHandlers[type] = d;
+                genHandlersCache[type] = methodInfo.CreateDelegate(typeof(WriteHandler<>).MakeGenericType(type));
+            }
+
             if (objHandlers.TryGetValue(type, out WriteHandler handler))
                 return type;
 
@@ -73,16 +80,16 @@ namespace Tmds.DBus.Protocol
             {
                 if ((enumerableType == ArgTypeInspector.EnumerableType.EnumerableKeyValuePair) ||
                     (enumerableType == ArgTypeInspector.EnumerableType.GenericDictionary))
-                    AddTypeHandler(type, s_messageWriterWriteDict.MakeGenericMethod(elementType.GenericTypeArguments));
+                    AddTypeHandler(s_messageWriterWriteDict.MakeGenericMethod(elementType.GenericTypeArguments));
                 else if (enumerableType == ArgTypeInspector.EnumerableType.AttributeDictionary)
-                    AddTypeHandler(type, s_messageWriterWriteDictionaryObject.MakeGenericMethod(type));
+                    AddTypeHandler(s_messageWriterWriteDictionaryObject.MakeGenericMethod(type));
                 else // Enumerable
-                    AddTypeHandler(type, s_messageWriterWriteArray.MakeGenericMethod(new[] { elementType }));
+                    AddTypeHandler(s_messageWriterWriteArray.MakeGenericMethod(new[] { elementType }));
                 return type;
             }
             if (ArgTypeInspector.IsStructType(type))
             {
-                AddTypeHandler(type, s_messageWriterWriteStruct.MakeGenericMethod(type));
+                AddTypeHandler(s_messageWriterWriteStruct.MakeGenericMethod(type));
                 return type;
             }
 
@@ -91,13 +98,16 @@ namespace Tmds.DBus.Protocol
 
         static WriteHandler WriterForType(Type type)
         {
-            return objHandlers[EnsureWriterForType(type)];
+            lock (handlersCacheLock)
+                return objHandlers[EnsureWriterForType(type)];
         }
         static WriteHandler<T> WriterForType<T>()
         {
-            return (WriteHandler<T>)genHandlersCache[EnsureWriterForType(typeof(T))];
+            lock (handlersCacheLock)
+                return (WriteHandler<T>)genHandlersCache[EnsureWriterForType(typeof(T))];
         }
 
+        static readonly object handlersCacheLock = new object();
         static readonly Dictionary<Type, WriteHandler> objHandlers = new Dictionary<Type, WriteHandler>
         {
             { typeof(bool), (w, v) => w.WriteBoolean((bool)v) },
@@ -134,13 +144,6 @@ namespace Tmds.DBus.Protocol
             { typeof(object), new WriteHandler<object>((w, v) => w.WriteVariant(v)) },
             { typeof(IDBusObject), new WriteHandler<IDBusObject>((w, v) => w.WriteBusObject(v)) }
         };
-
-        static void AddTypeHandler(Type type, MethodInfo methodInfo)
-        {
-            var d = methodInfo.CreateCustomDelegate<WriteHandler>();
-            objHandlers[type] = d;
-            genHandlersCache[type] = methodInfo.CreateDelegate(typeof(WriteHandler<>).MakeGenericType(type));
-        }
 
         public void Write(Type type, object val)
         {

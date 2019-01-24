@@ -11,7 +11,7 @@ namespace Tmds.DBus.Objects
     public class ReplyArgumentsDifferentFromExpectedException : Exception
     {
         public ReplyArgumentsDifferentFromExpectedException(MethodInfo method, Signature expectedSignature, Message replyMessage)
-            : base($"Expected signature: {expectedSignature.Value}, but received: {replyMessage.Header.Signature})")
+            : base($"Expected signature: {expectedSignature.Value}, but received: {replyMessage.Header.Signature}")
         {
             Method = method; ExpectedSignature = expectedSignature; ReplyMessage = replyMessage;
         }

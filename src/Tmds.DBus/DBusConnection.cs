@@ -152,10 +152,16 @@ namespace Tmds.DBus
             return CreateAndConnectAsync(stream, onDisconnect, new ClientProxyManager(null), sayHelloToServer);
         }
 
+        public class PendingMethodCont
+        {
+            public Message Request;
+            public TaskCompletionSource<Message> Reply;
+        }
+
         readonly IMessageStream _stream;
         readonly object _gate = new object();
         readonly Dictionary<SignalMatchRule, SignalHandler> _signalHandlers = new Dictionary<SignalMatchRule, SignalHandler>();
-        Dictionary<uint, TaskCompletionSource<Message>> _pendingMethods = new Dictionary<uint, TaskCompletionSource<Message>>();
+        Dictionary<uint, PendingMethodCont> _pendingMethods = new Dictionary<uint, PendingMethodCont>();
         readonly MethodHandlerPathPart RootPath = new MethodHandlerPathPart(null, null);
         readonly Dictionary<string, IMethodHandler> GlobalInterfaceHandlers = new Dictionary<string, IMethodHandler>();
 
@@ -280,7 +286,7 @@ namespace Tmds.DBus
 
         void Dispose(Exception disconnectReason)
         {
-            Dictionary<uint, TaskCompletionSource<Message>> pendingMethods = null;
+            Dictionary<uint, PendingMethodCont> pendingMethods = null;
             lock (_gate)
             {
                 pendingMethods = _pendingMethods;
@@ -307,8 +313,8 @@ namespace Tmds.DBus
             var e = (disconnectReason != null) ? 
                 (Exception)new DisconnectedException(disconnectReason) : 
                 new ObjectDisposedException(typeof(Connection).FullName);
-            foreach (var tcs in pendingMethods.Values)
-                tcs.SetException(e);
+            foreach (var mc in pendingMethods.Values)
+                mc.Reply.SetException(e);
             _onDisconnect?.Invoke(disconnectReason);
         }
         public void Dispose()
@@ -448,24 +454,28 @@ namespace Tmds.DBus
         private void HandleMessage(Message msg, IMessageStream peer)
         {
             uint? serial = msg.Header.ReplySerial;
+            PendingMethodCont pending = null;
             if (serial != null)
             {
                 uint serialValue = (uint)serial;
-                TaskCompletionSource<Message> pending = null;
                 lock (_gate)
                 {
                     if (_pendingMethods?.TryGetValue(serialValue, out pending) == true)
                         _pendingMethods.Remove(serialValue);
                 }
                 if (pending != null)
-                    pending.SetResult(msg);
+                    pending.Reply.SetResult(msg);
                 else
                 {
                     // Drop quietly
                     //throw new ProtocolException("Unexpected reply message received: MessageType = '" + msg.Header.MessageType + "', ReplySerial = " + serialValue);
                 }
-                return;
             }
+
+            var hook = MessageReceivedHook;
+            hook?.Invoke(msg, pending?.Request);
+            if (serial != null)
+                return;
 
             switch (msg.Header.MessageType)
             {
@@ -485,6 +495,8 @@ namespace Tmds.DBus
                     throw new ProtocolException("Invalid message received: MessageType='" + msg.Header.MessageType + "'");
             }
         }
+
+        public MessageReceivedHookHandler MessageReceivedHook { get; set; }
 
         public async Task<IDisposable> WatchSignalAsync(SignalHandler handler, string @interface, string signalName, string sender, ObjectPath? path = null)
         {
@@ -630,7 +642,7 @@ namespace Tmds.DBus
             var serial = GenerateSerial();
             msg.Header.Serial = serial;
 
-            var pending = new TaskCompletionSource<Message>();
+            var pending = new PendingMethodCont { Request = msg, Reply = new TaskCompletionSource<Message>() };
             lock (_gate)
             {
                 if (checkConnected)
@@ -651,7 +663,7 @@ namespace Tmds.DBus
                 throw;
             }
 
-            var reply = await pending.Task;
+            var reply = await pending.Reply.Task;
             if (checkReplyType)
             {
                 switch (reply.Header.MessageType)

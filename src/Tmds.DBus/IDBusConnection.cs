@@ -43,6 +43,10 @@ namespace Tmds.DBus
         /// <returns>Interfaces. Returned as IEnumerable as there may be multiple interfaces of same name</returns>
         IEnumerable<(string InterfaceName, IMethodHandler Handler)> RegisteredPathHandlers(ObjectPath? path, string maskInterface = null);
 
+        MessageReceivedHookHandler MessageReceivedHook { get; set; }
+
         bool IsDisposed { get; }
     }
+
+    public delegate void MessageReceivedHookHandler(Message receivedMessage, Message requestMessage = null);
 }

@@ -19,33 +19,51 @@ namespace Tmds.DBus
         {
             if (value == null)
                 throw new ArgumentNullException(nameof(value));
-
+            value = value.Trim();
             Validate(value);
             this.Value = value;
         }
-        public ObjectPath(IEnumerable<string> parts)
+        public ObjectPath(IEnumerable<string> parts, bool isAbsolute = true)
         {
             if (parts == null)
                 throw new ArgumentNullException(nameof(parts));
-            var partsList = parts.ToList();
-            foreach (var part in partsList)
+            var partsList = new List<string>(parts);
+            for (int i = 0; i < partsList.Count; ++i)
             {
-                var subPart = '/' + part;
-                Validate(subPart);
+                partsList[i] = partsList[i].Trim();
+                var subPart = '/' + partsList[i];
+                Validate(partsList[i]);
                 if (new ObjectPath(subPart).Decomposed.Length > 1)
                     throw new ArgumentException("One of the parts has multiple subparts");
             }
-            var value = '/' + string.Join("/", partsList);
+            var value = string.Join("/", partsList);
+            if (isAbsolute)
+                value = '/' + value;
             Validate(value);
             Value = value;
         }
 
-        static void Validate(string value)
+        private ObjectPath(string value, int _dummyForNoValidate) { Value = value.Trim(); }
+
+        public static ObjectPath? Parse(string value)
         {
-            if (!value.StartsWith("/", StringComparison.Ordinal))
-                throw new ArgumentException("value");
+            return !Validate(value, throwIfInvalid: false) ? null : (ObjectPath?)new ObjectPath(value, 0);
+        }
+
+        public bool IsAbsolute => Value.StartsWith("/");
+
+        public static bool Validate(string value, bool throwIfInvalid = true)
+        {
+            bool handler(string message)
+            {
+                if (throwIfInvalid)
+                    throw new ArgumentException(message);
+                return false;
+            }
+            /*if (!value.StartsWith("/", StringComparison.Ordinal))
+                return handler("value");*/
             if (value.EndsWith("/", StringComparison.Ordinal) && value.Length > 1)
-                throw new ArgumentException("ObjectPath cannot end in '/'");
+                return handler("ObjectPath cannot end in '/'");
 
             bool multipleSlash = false;
 
@@ -59,13 +77,14 @@ namespace Tmds.DBus
 
                 if (!valid)
                 {
-                    var message = string.Format("'{0}' is not a valid character in an ObjectPath", c);
-                    throw new ArgumentException(message, "value");
+                    if (throwIfInvalid)
+                        throw new ArgumentException($"'{c}' is not a valid character in an ObjectPath", "value");
+                    else
+                        return false;
                 }
-
                 multipleSlash = c == '/';
             }
-
+            return true;
         }
 
         public int CompareTo(ObjectPath other)
