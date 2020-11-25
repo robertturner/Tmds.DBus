@@ -32,7 +32,7 @@ namespace Tmds.DBus.Protocol
         public static readonly Signature DoubleSig = Allocate(DType.Double);
         public static readonly Signature Int16Sig = Allocate(DType.Int16);
         public static readonly Signature Int64Sig = Allocate(DType.Int64);
-        public static readonly Signature SingleSig = Allocate(DType.Single);
+        //public static readonly Signature SingleSig = Allocate(DType.Single);
         public static readonly Signature UInt64Sig = Allocate(DType.UInt64);
         public static readonly Signature StructBeginSig = Allocate(DType.StructBegin);
         public static readonly Signature StructEndSig = Allocate(DType.StructEnd);
@@ -173,7 +173,7 @@ namespace Tmds.DBus.Protocol
                 case DType.UInt32: return UInt32Sig._data;
                 case DType.Int64: return Int64Sig._data;
                 case DType.UInt64: return UInt64Sig._data;
-                case DType.Single: return SingleSig._data;
+                //case DType.Single: return SingleSig._data;
                 case DType.Double: return DoubleSig._data;
                 case DType.String: return StringSig._data;
                 case DType.ObjectPath: return ObjectPathSig._data;
@@ -283,8 +283,8 @@ namespace Tmds.DBus.Protocol
                 case DType.Int64:
                 case DType.UInt64:
                     return 8;
-                case DType.Single:
-                    return 4;
+                /*case DType.Single:
+                    return 4;*/
                 case DType.Double:
                     return 8;
                 case DType.String:
@@ -527,8 +527,8 @@ namespace Tmds.DBus.Protocol
                 return typeof (long);
             case DType.UInt64:
                 return typeof (ulong);
-            case DType.Single: ////not supported by libdbus at time of writing
-                return typeof (float);
+            /*case DType.Single: ////not supported by libdbus at time of writing
+                return typeof (float);*/
             case DType.Double:
                 return typeof (double);
             case DType.String:
@@ -609,7 +609,7 @@ namespace Tmds.DBus.Protocol
             else if (type == typeof(string))
                 return StringSig;
             else if (type == typeof(float))
-                return SingleSig;
+                return DoubleSig; // SingleSig
             else if (type == typeof(ushort))
                 return UInt16Sig;
             else if (type == typeof(uint))
@@ -725,7 +725,7 @@ namespace Tmds.DBus.Protocol
                 case DType.UInt32:
                 case DType.Int64:
                 case DType.UInt64:
-                case DType.Single:
+                //case DType.Single:
                 case DType.Double:
                 case DType.String:
                 case DType.ObjectPath:

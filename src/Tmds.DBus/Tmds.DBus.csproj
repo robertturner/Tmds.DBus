@@ -20,14 +20,26 @@
 
   <ItemGroup>
     <PackageReference Include="Castle.Core" Version="4.2.1" />
+    <PackageReference Include="StaticProxy.Fody" Version="1.0.150-GenericMethods">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers</IncludeAssets>
+    </PackageReference>
+    <PackageReference Include="StaticProxy.Interceptor" Version="1.0.127-GenericMethods" />
     <PackageReference Include="System.Net.NameResolution" Version="4.3.0" />
+    <PackageReference Include="System.Reactive" Version="3.1.1" />
+    <PackageReference Include="System.Reactive.Core" Version="3.1.1" />
+    <PackageReference Include="System.Reactive.Interfaces" Version="3.1.1" />
+    <PackageReference Include="System.Reactive.Linq" Version="3.1.1" />
     <PackageReference Include="System.Security.Principal" Version="4.3.0" />
     <PackageReference Include="System.Security.Principal.Windows" Version="4.4.1" />
-    <PackageReference Include="robertturner.BaseLibs" Version="0.1.17" />
+    <PackageReference Include="robertturner.BaseLibs" Version="1.0.0" />
   </ItemGroup>
   <ItemGroup Condition="'$(TargetFramework)'=='net47'">
     <PackageReference Include="System.Runtime.InteropServices.RuntimeInformation" Version="4.3.0" />
     <PackageReference Include="System.Net.Sockets" Version="4.3.0" />
+  </ItemGroup>
+  <ItemGroup>
+    <Content Include="FodyWeavers.xml" />
   </ItemGroup>
 
 </Project>

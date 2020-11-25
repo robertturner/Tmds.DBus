@@ -17,7 +17,7 @@ namespace Tmds.DBus.Objects
 
         static readonly System.Collections.Concurrent.ConcurrentDictionary<(Type type, MemberExposure exposure), TypeDescription> typesCache = new System.Collections.Concurrent.ConcurrentDictionary<(Type type, MemberExposure exposure), TypeDescription>();
 
-        public static TypeDescription GetDescriptor(Type type, MemberExposure exposure = MemberExposure.OnlyDBusInterfaces)
+        public static TypeDescription GetOrCreateCached(Type type, MemberExposure exposure = MemberExposure.OnlyDBusInterfaces)
         {
             var accessor = (type, exposure);
             return typesCache.GetOrAdd(accessor, a => new TypeDescription(type, exposure));
@@ -111,22 +111,23 @@ namespace Tmds.DBus.Objects
 
                     Type[] args = null;
                     string[] argNames = null;
-                    Type tupleArg = null;
                     Type callbackType = null;
                     bool lastParamIsPath = false;
+                    bool argsAreInTuple = false;
                     if ((retType == typeof(Task<IDisposable>) || retType == typeof(IDisposable) || retType == typeof(void)) && paramObjs.Length == 1)
                     {
                         callbackType = paramObjs[0].ParameterType;
                         if (callbackType.IsGenericType && callbackType.GetGenericTypeDefinition().FullName.StartsWith("System.Action`", StringComparison.Ordinal))
                         {
-                            var genArgs = callbackType.GenericTypeArguments;
-                            if (genArgs.Length == 1 && genArgs[0].FullName.StartsWith("System.ValueTuple`", StringComparison.Ordinal))
+                            args = callbackType.GetGenericArguments();
+                            if (args.Length == 1 && !args[0].IsArray && args[0].FullName.StartsWith("System.ValueTuple`", StringComparison.Ordinal))
                             {
-                                tupleArg = genArgs[0];
-                                args = tupleArg.GenericTypeArguments;
+                                args = args[0].GetGenericArguments();
+                                argsAreInTuple = true;
+                                var tupleElementNames = paramObjs[0].GetCustomAttribute<System.Runtime.CompilerServices.TupleElementNamesAttribute>();
+                                if (tupleElementNames != null && tupleElementNames.TransformNames.Count == args.Length)
+                                    argNames = tupleElementNames.TransformNames.ToArray();
                             }
-                            else
-                                args = genArgs;
                         }
                         else if (callbackType == typeof(Action))
                             args = new Type[0];
@@ -156,10 +157,10 @@ namespace Tmds.DBus.Objects
 
                     var sig = new SignalDef(sigName, 
                         args.Select((a, i) => new ArgDef(argNames[i], a)).ToArray(),
-                        tupleArg != null,
                         lastParamIsPath,
                         callbackType,
-                        m);
+                        m,
+                        argsAreInTuple);
                     signals.Add(sigName, sig);
                 }
                 else
@@ -171,8 +172,12 @@ namespace Tmds.DBus.Objects
                 if (p.HasAttribute<DBusHideMethodAttribute>())
                     continue;
                 var argNameAttr = p.Attribute<DBusArgNameAttribute>();
-                var arg = new ArgDef((argNameAttr != null) ? argNameAttr.Name : string.Empty, p.PropertyType);
-                this.properties.Add(p.Name, new PropertyDef(p, arg));
+                var propType = p.PropertyType;
+                var isAsync = typeof(Task).IsAssignableFrom(propType);
+                if (isAsync)
+                    propType = (propType == typeof(Task)) ? typeof(void) : propType.GetGenericArguments()[0];
+                var arg = new ArgDef((argNameAttr != null) ? argNameAttr.Name : string.Empty, propType);
+                this.properties.Add(p.Name, new PropertyDef(p, arg, isAsync));
             }
         }
 
@@ -210,7 +215,7 @@ namespace Tmds.DBus.Objects
             {
                 Type = type;
             }
-            public Type Type { get; private set; }
+            public Type Type { get; }
             public bool HasResult => Type != typeof(void);
 
         }
@@ -229,20 +234,10 @@ namespace Tmds.DBus.Objects
                     ReturnTypes = new ArgDef[0];
                 else
                 {
-                    if (retType.IsGenericType && retType.Name.StartsWith("ValueTuple'", StringComparison.Ordinal))
-                    {
-                        // Need to split tuple parts up into individual arguments in reply
-                        // Set retArgNames
-                        throw new NotImplementedException("Tuple return types not yet implemented");
-                    }
-                    else
-                    {
-                        var retArgNameAttr = method.ReturnParameter.Attribute<DBusArgNameAttribute>();
-                        ReturnTypes = new[] { new ArgDef(retArgNameAttr != null ? retArgNameAttr.Name : DefaultMethodReturnArgName, retType) };
-                    }
+                    var retArgNameAttr = method.ReturnParameter.Attribute<DBusArgNameAttribute>();
+                    ReturnTypes = new[] { new ArgDef(retArgNameAttr != null ? retArgNameAttr.Name : DefaultMethodReturnArgName, retType) };
                     ReturnType = retType;
                 }
-                base.ReturnTypes = ReturnTypes;
 
                 var paramObjs = method.GetParameters();
                 var args = new List<ArgDef>(paramObjs.Length);
@@ -267,37 +262,38 @@ namespace Tmds.DBus.Objects
                 base.ArgTypes = ArgDefs;
             }
 
-            public MethodInfo MethodInfo { get; private set; }
+            public MethodInfo MethodInfo { get; }
 
-            public new ArgDef[] ReturnTypes { get; private set; }
             public bool HasReturnValue => ReturnTypes.Length > 0;
             /// <summary>
             /// c# method return value type. Single type for single signature, or ValueTuple for multipart signature
             /// </summary>
-            public Type ReturnType { get; private set; }
+            public Type ReturnType { get; }
+            public bool ReturnTypeIsTuple { get; }
 
-            public bool IsAsync { get; private set; }
+            public bool IsAsync { get; }
 
-            public ArgDef[] ArgDefs { get; private set; }
-            public new Type[] ArgTypes { get; private set; }
+            public ArgDef[] ArgDefs { get; }
+            public new Type[] ArgTypes { get; }
 
             public bool LastArgIsPathObj { get; private set; }
         }
 
         public new class SignalDef : InterfaceObjDef.SignalDef
         {
-            public SignalDef(string name, ArgDef[] args, bool argsAsTuple, bool lastParamIsPath, Type callbackType, MethodInfo method)
+            public SignalDef(string name, ArgDef[] args, bool lastParamIsPath, Type callbackType, MethodInfo method, bool argsInTuple)
                 : base(name, args)
             {
                 ArgDefs = args;
                 ArgTypes = args.Select(a => a.Type).ToArray();
-                ArgsAsTuple = argsAsTuple;
-                LastParamIsPath = lastParamIsPath; CallbackType = callbackType;
+                LastParamIsPath = lastParamIsPath;
+                CallbackType = callbackType;
                 MethodInfo = method;
+                ArgsAreInTuple = argsInTuple;
             }
             public new ArgDef[] ArgDefs { get; private set; }
             public readonly Type[] ArgTypes;
-            public readonly bool ArgsAsTuple;
+            public readonly bool ArgsAreInTuple;
             public readonly bool LastParamIsPath;
             public readonly Type CallbackType;
             public readonly MethodInfo MethodInfo;
@@ -305,12 +301,14 @@ namespace Tmds.DBus.Objects
 
         public new class PropertyDef : InterfaceObjDef.PropertyDef
         {
-            public PropertyDef(PropertyInfo propInfo, ArgDef arg)
+            public PropertyDef(PropertyInfo propInfo, ArgDef arg, bool isAsync)
                 : base(propInfo.Name, arg, propInfo.CanRead ? (propInfo.CanWrite ? AccessTypes.ReadWrite : AccessTypes.Read) : (propInfo.CanWrite ? AccessTypes.Write : AccessTypes.None))
             {
-                PropertyInfo = propInfo;
+                PropertyInfo = propInfo; IsAsync = isAsync;
             }
-            public PropertyInfo PropertyInfo { get; private set; }
+            public PropertyInfo PropertyInfo { get; }
+            public bool IsAsync { get; }
+            public new ArgDef Type => (ArgDef)base.Type;
         }
     }
 }

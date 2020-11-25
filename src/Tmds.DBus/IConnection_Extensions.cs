@@ -7,7 +7,9 @@ using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
 using Tmds.DBus.Objects;
+using Tmds.DBus.Objects.DBus;
 using Tmds.DBus.Protocol;
+using System.Reactive.Linq;
 
 namespace Tmds.DBus
 {
@@ -154,7 +156,13 @@ namespace Tmds.DBus
         {
             if (connection == null)
                 throw new ArgumentNullException(nameof(connection));
-            return connection.BaseDBusConnection.ProxyProvider.GetInstance<T>(path, service);
+            return connection.BaseDBusConnection.GetInstance<T>(path, service);
+        }
+        public static T CreateProxy<T>(this IConnection connection, string service, ObjectPath path, out IDBusObjectProxy<T> container)
+        {
+            if (connection == null)
+                throw new ArgumentNullException(nameof(connection));
+            return connection.BaseDBusConnection.GetInstance<T>(path, service, out container);
         }
 
         static DBusInterfaceAttribute FindInterfaceAttribute(Type type)
@@ -207,6 +215,18 @@ namespace Tmds.DBus
             if (interfaceAttribute == null)
                 throw new ArgumentException($"{nameof(DBusInterfaceAttribute)} missing for object instance.");
             connection.UnregisterObject(path, interfaceAttribute.Name);
+        }
+
+        public static IObservable<T> WatchAsObservable<T>(Func<Action<T>, Task<IDisposable>> func)
+        {
+            return Observable.Create((IObserver<T> observer) => func(t => observer.OnNext(t)));
+        }
+
+        public static IObservable<(string service, bool up)> ServiceFeed(this IConnection connection)
+        {            
+            var o = WatchAsObservable<(string name, string old_owner, string new_owner)>(connection.DBus.WatchNameOwnerChanged)
+                .Publish().RefCount();
+            return o.Select(changes => (changes.name, !string.IsNullOrEmpty(changes.new_owner)));
         }
     }
 }

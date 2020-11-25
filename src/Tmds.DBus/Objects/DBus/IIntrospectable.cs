@@ -8,6 +8,7 @@ using System.Threading.Tasks;
 namespace Tmds.DBus.Objects.DBus
 {
     [DBusInterface("org.freedesktop.DBus.Introspectable")]
+    [StaticProxy]
     public interface IIntrospectable
     {
         [return: DBusArgName("xml_data")]

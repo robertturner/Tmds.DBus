@@ -7,6 +7,7 @@ using System.Threading.Tasks;
 namespace Tmds.DBus.Objects.DBus
 {
     [DBusInterface("org.freedesktop.DBus.Peer")]
+    [StaticProxy]
     public interface IPeer
     {
         [return: DBusArgName("machine_uuid")]

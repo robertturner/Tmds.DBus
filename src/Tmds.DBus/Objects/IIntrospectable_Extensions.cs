@@ -102,12 +102,12 @@ namespace Tmds.DBus.Objects
 
                             intermediatePaths = intermediatePaths.Concat(part.SingleItemAsEnumerable());
                             bool found = false;
-                            foreach (var n in thisTreeDef.Nodes)
+                            foreach (var (Name, Node) in thisTreeDef.Nodes)
                             {
-                                if (n.Name == part)
+                                if (Name == part)
                                 {
                                     if (!lastPart)
-                                        thisTreeDef = (PathTreeDef)(await n.Node.Value);
+                                        thisTreeDef = (PathTreeDef)(await Node.Value);
                                     else
                                         thisTreeDef = passedInTreeDef;
                                     found = true;

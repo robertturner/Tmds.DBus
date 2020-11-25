@@ -7,6 +7,7 @@ using System.Threading.Tasks;
 namespace Tmds.DBus.Objects.DBus
 {
     [DBusInterface("org.freedesktop.DBus.Properties")]
+    [StaticProxy]
     public interface IProperties
     {
         [return: DBusArgName("value")]

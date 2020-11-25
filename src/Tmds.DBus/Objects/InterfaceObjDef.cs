@@ -22,8 +22,8 @@ namespace Tmds.DBus.Objects
                 Name = name ?? string.Empty;
                 Signature = sig;
             }
-            public string Name { get; private set; }
-            public Signature Signature { get; private set; }
+            public string Name { get; }
+            public Signature Signature { get; }
             public override string ToString()
             {
                 var sigStr = Signature.ToString();
@@ -75,7 +75,7 @@ namespace Tmds.DBus.Objects
             }
             public Signature MethodSignature { get; private set; }
         }
-        public virtual MethodDef[] Methods { get; private set; }
+        public virtual MethodDef[] Methods { get; }
         public class PropertyDef
         {
             public enum AccessTypes
@@ -90,7 +90,7 @@ namespace Tmds.DBus.Objects
             public ArgDef Type { get; private set; }
             public AccessTypes Access { get; private set; }
         }
-        public virtual PropertyDef[] Properties { get; private set; }
+        public virtual PropertyDef[] Properties { get; }
         public class SignalDef
         {
             public SignalDef(string name, ArgDef[] argTypes)
@@ -101,7 +101,7 @@ namespace Tmds.DBus.Objects
             public string Name { get; private set; }
             public ArgDef[] ArgDefs { get; private set; }
         }
-        public virtual SignalDef[] Signals { get; private set; }
+        public virtual SignalDef[] Signals { get; }
 
     }
 }

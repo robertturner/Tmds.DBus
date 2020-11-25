@@ -15,7 +15,7 @@ using Tmds.DBus.Objects;
 using System.Linq;
 using Tmds.DBus.Objects.DBus;
 using BaseLibs.Collections;
-using Tmds.DBus.Objects.Internal;
+using BaseLibs.Tasks;
 
 namespace Tmds.DBus
 {
@@ -110,7 +110,7 @@ namespace Tmds.DBus
         public const string DBusServiceName = "org.freedesktop.DBus";
         public const string DBusInterface = "org.freedesktop.DBus";
 
-        public static async Task<DBusConnection> ConnectAsync(ClientSetupResult connectionContext, Action<Exception> onDisconnect, CancellationToken cancellationToken, IClientObjectProvider objectProvider)
+        public static async Task<DBusConnection> ConnectAsync(ClientSetupResult connectionContext, Action<Exception> onDisconnect, CancellationToken cancellationToken, IEnumerable<IClientObjectProvider> clientProviders)
         {
             var _entries = AddressEntry.ParseEntries(connectionContext.ConnectionAddress);
             if (_entries.Length == 0)
@@ -126,7 +126,9 @@ namespace Tmds.DBus
                 _serverId = entry.Guid;
                 try
                 {
-                    stream = await Transport.ConnectAsync(entry, connectionContext, cancellationToken).ConfigureAwait(false);
+                    stream = await Transport.ConnectAsync(entry, connectionContext, cancellationToken)
+                        .TimeoutAfter(connectionContext.InitialTimeout)
+                        .ConfigureAwait(false);
                 }
                 catch
                 {
@@ -137,31 +139,62 @@ namespace Tmds.DBus
 
                 break;
             }
-            return await CreateAndConnectAsync(stream, onDisconnect, objectProvider);
+            return await CreateAndConnectAsync(stream, onDisconnect, clientProviders, true, connectionContext.InitialTimeout);
         }
 
-        public static async Task<DBusConnection> CreateAndConnectAsync(IMessageStream stream, Action<Exception> onDisconnect, IClientObjectProvider objectProvider, bool sayHelloToServer = true)
+        public static async Task<DBusConnection> CreateAndConnectAsync(IMessageStream stream, Action<Exception> onDisconnect, IEnumerable<IClientObjectProvider> clientProviders, bool sayHelloToServer = true, TimeSpan? initialTimeout = null)
         {
-            var dbusConnection = new DBusConnection(stream, objectProvider);
-            objectProvider.DBusConnection = dbusConnection;
+            var dbusConnection = new DBusConnection(stream, clientProviders);
+            if (initialTimeout.HasValue)
+                dbusConnection.Timeout = initialTimeout.Value;
+            foreach (var prov in clientProviders)
+                prov.DBusConnection = dbusConnection;
             await dbusConnection.ConnectAsync(onDisconnect, default(CancellationToken), sayHelloToServer);
             return dbusConnection;
         }
         public static Task<DBusConnection> CreateAndConnectAsync(IMessageStream stream, Action<Exception> onDisconnect = null, bool sayHelloToServer = true)
         {
-            return CreateAndConnectAsync(stream, onDisconnect, new ClientProxyManager(null), sayHelloToServer);
+            return CreateAndConnectAsync(stream, onDisconnect, new IClientObjectProvider[] { new StaticProxyManager(null), new ClientProxyManager(null) }, sayHelloToServer);
         }
 
         public class PendingMethodCont
         {
-            public Message Request;
-            public TaskCompletionSource<Message> Reply;
+            public PendingMethodCont(Message request, Action<PendingMethodCont> timeoutCallback)
+            {
+                Request = request;
+                Transaction = new MessageTransaction { Request = request };
+                Reply = new TaskCompletionSource<MessageTransaction>(Transaction);
+                Timer = new System.Timers.Timer
+                {
+                    AutoReset = false
+                };
+                Timer.Elapsed += Timer_Elapsed;
+                TimeoutCallback = timeoutCallback;
+            }
+
+            public Action<PendingMethodCont> TimeoutCallback;
+
+            private void Timer_Elapsed(object sender, System.Timers.ElapsedEventArgs e)
+            {
+                TimeoutCallback?.Invoke(this);
+            }
+
+            public void DisposeTimer()
+            {
+                Timer.Elapsed -= Timer_Elapsed;
+                Timer.Dispose();
+            }
+
+            public readonly Message Request;
+            public readonly TaskCompletionSource<MessageTransaction> Reply;
+            public readonly System.Timers.Timer Timer;
+            public readonly MessageTransaction Transaction;
         }
 
         readonly IMessageStream _stream;
         readonly object _gate = new object();
         readonly Dictionary<SignalMatchRule, SignalHandler> _signalHandlers = new Dictionary<SignalMatchRule, SignalHandler>();
-        Dictionary<uint, PendingMethodCont> _pendingMethods = new Dictionary<uint, PendingMethodCont>();
+        volatile Dictionary<uint, PendingMethodCont> _pendingMethods = new Dictionary<uint, PendingMethodCont>();
         readonly MethodHandlerPathPart RootPath = new MethodHandlerPathPart(null, null);
         readonly Dictionary<string, IMethodHandler> GlobalInterfaceHandlers = new Dictionary<string, IMethodHandler>();
 
@@ -172,6 +205,8 @@ namespace Tmds.DBus
             string PathPart { get; }
             ObjectPath Path { get; }
         }
+
+        public TimeSpan Timeout { get; set; } = TimeSpan.FromSeconds(2);
 
         class MethodHandlerPathPart : IMethodHandlerPathPart
         {
@@ -240,7 +275,32 @@ namespace Tmds.DBus
         public bool? RemoteIsBus { get; private set; }
 
         public IDBus DBus { get; private set; }
-        public IClientObjectProvider ProxyProvider { get; private set; }
+        readonly IEnumerable<IClientObjectProvider> proxyProviders;
+
+        public T GetInstance<T>(ObjectPath path, string interfaceName, string serviceName, out IDBusObjectProxy<T> container)
+        {
+            IClientObjectProvider preferred = null;
+            IClientObjectProvider first = null;
+            foreach (var prov in proxyProviders)
+            {
+                var pref = prov.TypePreference<T>();
+                if (preferred == null)
+                {
+                    if (pref == ProviderPreferences.Preferred)
+                    {
+                        preferred = prov;
+                        break;
+                    }
+                }
+                if (first == null && pref != ProviderPreferences.UnableToGet)
+                    first = prov;
+            }
+            if (preferred == null)
+                preferred = first;
+            if (preferred == null)
+                throw new ArgumentException($"Unable to find proxy provider to create instance for {typeof(T)}");
+            return preferred.GetInstance<T>(path, interfaceName, serviceName, out container);
+        }
 
         public bool IsDisposed => _pendingMethods == null;
         void ThrowIfDisposed()
@@ -259,10 +319,10 @@ namespace Tmds.DBus
                 throw new InvalidOperationException("Not Connected");
         }
 
-        private DBusConnection(IMessageStream stream, IClientObjectProvider clientProvider)
+        private DBusConnection(IMessageStream stream, IEnumerable<IClientObjectProvider> clientProviders)
         {
             _stream = stream;
-            ProxyProvider = clientProvider;
+            this.proxyProviders = clientProviders;
             _sendQueue = new ConcurrentQueue<PendingSend>();
             _sendSemaphore = new SemaphoreSlim(1);
         }
@@ -274,7 +334,7 @@ namespace Tmds.DBus
             {
                 if (DBus != null)
                     throw new InvalidOperationException("Already connected");
-                DBus = ProxyProvider.GetInstance<IDBus>(DBusObjectPath, DBusServiceName);
+                DBus = this.GetInstance<IDBus>(DBusObjectPath, DBusServiceName);
             }
             _onDisconnect = onDisconnect;
 
@@ -289,14 +349,14 @@ namespace Tmds.DBus
             Dictionary<uint, PendingMethodCont> pendingMethods = null;
             lock (_gate)
             {
-                pendingMethods = _pendingMethods;
+                pendingMethods = Interlocked.Exchange(ref _pendingMethods, null);
                 if (pendingMethods == null)
                     return;
-                _pendingMethods = null;
                 _localName = null;
                 _stream.Dispose();
                 _signalHandlers.Clear();
-                ProxyProvider.Dispose();
+                foreach (var prov in proxyProviders)
+                    prov.Dispose();
                 foreach (var h in GlobalInterfaceHandlers)
                     h.Value.Dispose();
                 GlobalInterfaceHandlers.Clear();
@@ -455,25 +515,63 @@ namespace Tmds.DBus
         {
             uint? serial = msg.Header.ReplySerial;
             PendingMethodCont pending = null;
+            var pendingMethods = _pendingMethods;
+            if (pendingMethods == null)
+                return; // Disposed
+            var receiveTime = DateTime.Now;
             if (serial != null)
             {
-                uint serialValue = (uint)serial;
+                uint serialValue = serial.Value;
                 lock (_gate)
                 {
-                    if (_pendingMethods?.TryGetValue(serialValue, out pending) == true)
-                        _pendingMethods.Remove(serialValue);
+                    if (pendingMethods.TryGetValue(serialValue, out pending))
+                    {
+                        pending.DisposeTimer();
+                        pendingMethods.Remove(serialValue);
+                    }
                 }
                 if (pending != null)
-                    pending.Reply.SetResult(msg);
+                {
+                    pending.Transaction.ReplyReceivedTime = receiveTime;
+                    pending.Transaction.Reply = msg;
+                    Exception ex = null;
+                    switch (msg.Header.MessageType)
+                    {
+                        case MessageType.MethodReturn:
+                            pending.Reply.TrySetResult(pending.Transaction);
+                            break;
+                        case MessageType.Error:
+                            string errMsg = string.Empty;
+                            if (msg.Header.Signature.Value.Value.StartsWith("s", StringComparison.Ordinal))
+                                errMsg = new MessageReader(msg).ReadString();
+                            ex = new DBusException(msg.Header.ErrorName, errMsg);
+                            break;
+                        case MessageType.Invalid:
+                        default:
+                            ex = new ProtocolException("Invalid message received: MessageType='" + msg.Header.MessageType + "'");
+                            break;
+                    }
+                    if (ex != null)
+                        pending.Reply.TrySetException(ex);
+                }
                 else
                 {
+                    serial = null;
                     // Drop quietly
                     //throw new ProtocolException("Unexpected reply message received: MessageType = '" + msg.Header.MessageType + "', ReplySerial = " + serialValue);
                 }
             }
 
             var hook = MessageReceivedHook;
-            hook?.Invoke(msg, pending?.Request);
+            if (hook != null)
+            {
+                var transaction = (pending != null) ? pending.Transaction : new MessageTransaction
+                {
+                    Reply = msg,
+                    ReplyReceivedTime = receiveTime
+                };
+                hook.Invoke(transaction);
+            }
             if (serial != null)
                 return;
 
@@ -486,13 +584,15 @@ namespace Tmds.DBus
                     HandleSignal(msg);
                     break;
                 case MessageType.Error:
-                    string errMsg = String.Empty;
+                    string errMsg = string.Empty;
                     if (msg.Header.Signature.Value.Value.StartsWith("s", StringComparison.Ordinal))
                         errMsg = new MessageReader(msg).ReadString();
-                    throw new DBusException(msg.Header.ErrorName, errMsg);
+                    //throw new DBusException(msg.Header.ErrorName, errMsg);
+                    break;
                 case MessageType.Invalid:
                 default:
-                    throw new ProtocolException("Invalid message received: MessageType='" + msg.Header.MessageType + "'");
+                    //throw new ProtocolException("Invalid message received: MessageType='" + msg.Header.MessageType + "'");
+                    break;
             }
         }
 
@@ -628,59 +728,77 @@ namespace Tmds.DBus
 
         uint GenerateSerial()
         {
-            return (uint)Interlocked.Increment(ref _methodSerial);
+            uint ret;
+            do
+            {
+                ret = (uint)Interlocked.Increment(ref _methodSerial);
+            } while (ret == 0);
+            return ret;
         }
 
-        public Task<Message> CallMethodAsync(Message msg, bool checkConnected = true)
+        public Task<MessageTransaction> CallMethodAsync(Message msg, bool checkConnected = true)
         {
             return CallMethodAsync(msg, checkConnected, checkReplyType: true);
         }
 
-        public async Task<Message> CallMethodAsync(Message msg, bool checkConnected, bool checkReplyType)
+        void MethodCallTimeout(PendingMethodCont cont)
+        {
+            var serialValue = cont.Request.Header.Serial;
+            var pendingMethods = _pendingMethods;
+            cont.DisposeTimer();
+            if (pendingMethods == null)
+                return;
+            bool setException;
+            lock (_gate)
+            {
+                setException = pendingMethods.Remove(serialValue);
+            }
+            if (setException)
+            {
+                cont.Reply.TrySetException(new DBusException(DBusErrors.Timeout, "Did not receive a reply in time"));
+            }
+        }
+
+        public Task<MessageTransaction> CallMethodAsync(Message msg, bool checkConnected, bool checkReplyType)
         {
             msg.Header.ReplyExpected = true;
             var serial = GenerateSerial();
             msg.Header.Serial = serial;
 
-            var pending = new PendingMethodCont { Request = msg, Reply = new TaskCompletionSource<Message>() };
+            var pending = new PendingMethodCont(msg, MethodCallTimeout);
+            pending.Timer.Interval = Timeout.TotalMilliseconds;
+            var pendingMethods = _pendingMethods;
             lock (_gate)
             {
-                if (checkConnected)
+                if (checkConnected || pendingMethods == null)
                     ThrowIfNotConnected();
-                _pendingMethods[msg.Header.Serial] = pending;
+                pendingMethods[msg.Header.Serial] = pending;
+                pending.Transaction.RequestSendTime = DateTime.Now;
+                pending.Timer.Start();
             }
-
-            try
-            {
-                await SendMessageAsync(msg);
-            }
-            catch
-            {
-                lock (_gate)
+            // Chained (rather than async await) to preserve AsyncState
+            SendMessageAsync(msg)
+                .ContinueWith(r =>
                 {
-                    _pendingMethods?.Remove(serial);
-                }
-                throw;
-            }
-
-            var reply = await pending.Reply.Task;
-            if (checkReplyType)
-            {
-                switch (reply.Header.MessageType)
-                {
-                    case MessageType.MethodReturn:
-                        return reply;
-                    case MessageType.Error:
-                        string errorMessage = String.Empty;
-                        if (reply.Header.Signature?.Value.StartsWith("s", StringComparison.Ordinal) == true)
-                            errorMessage = new MessageReader(reply).ReadString();
-                        throw new DBusException(reply.Header.ErrorName, errorMessage);
-                    default:
-                        throw new ProtocolException("Got unexpected message of type " + reply.Header.MessageType + " while waiting for a MethodReturn or Error");
-                }
-            }
-
-            return reply;
+                    if (r.IsFaulted || r.IsCanceled)
+                    {
+                        pending.DisposeTimer();
+                        pendingMethods = _pendingMethods;
+                        lock (_gate)
+                        {
+                            pendingMethods.Remove(msg.Header.Serial);
+                        }
+                        pending.Transaction.RequestSendTime = null;
+                        if (r.IsFaulted)
+                        {
+                            var ex = (r.Exception.InnerExceptions.Count == 1) ? r.Exception.InnerExceptions[0] : r.Exception;
+                            pending.Reply.SetException(ex);
+                        }
+                        else
+                            pending.Reply.SetCanceled();
+                    }
+                });
+            return pending.Reply.Task;
         }
 
         Task RemoveSignalHandler(SignalMatchRule rule, SignalHandler dlg)

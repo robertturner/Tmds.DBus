@@ -334,13 +334,13 @@ namespace Tmds.DBus.Transports
             {
                 int length = await ReadCountAsync(buffer, 0, buffer.Length, _fileDescriptors);
                 if (length == 0)
-                {
                     throw new IOException("Connection closed by peer");
-                }
                 byte b = buffer[0];
                 if (b == '\r')
                 {
                     length = await ReadCountAsync(buffer, 0, buffer.Length, _fileDescriptors);
+                    if (length == 0)
+                        throw new IOException("Connection closed by peer");
                     b = buffer[0];
                     if (b == '\n')
                     {

@@ -65,7 +65,7 @@ namespace Tmds.DBus.Protocol
             else if (type == typeof(string))
                 return GetAlignment(DType.String);
             else if (type == typeof(float))
-                return GetAlignment(DType.Single);
+                return GetAlignment(DType.Double); // DType.Single
             else if (type == typeof(ushort))
                 return GetAlignment(DType.UInt16);
             else if (type == typeof(uint))
@@ -111,8 +111,8 @@ namespace Tmds.DBus.Protocol
                 case DType.Int64:
                 case DType.UInt64:
                     return 8;
-                case DType.Single: //Not yet supported!
-                    return 4;
+                /*case DType.Single: //Not yet supported!
+                    return 4;*/
                 case DType.Double:
                     return 8;
                 case DType.String:

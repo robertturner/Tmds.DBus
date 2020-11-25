@@ -14,11 +14,12 @@ namespace Tmds.DBus
 {
     public interface IDBusConnection : IDisposable
     {
-        Task<Message> CallMethodAsync(Message message, bool checkConnected = true);
+        TimeSpan Timeout { get; set; }
+        Task<MessageTransaction> CallMethodAsync(Message message, bool checkConnected = true);
         bool? RemoteIsBus { get; }
         string LocalName { get; }
         IDBus DBus { get; }
-        IClientObjectProvider ProxyProvider { get; }
+        T GetInstance<T>(ObjectPath path, string interfaceName, string serviceName, out IDBusObjectProxy<T> container);
 
         Task<IDisposable> WatchSignalAsync(SignalHandler handler, string @interface, string signalName, string sender, ObjectPath? path = null);
 
@@ -48,5 +49,5 @@ namespace Tmds.DBus
         bool IsDisposed { get; }
     }
 
-    public delegate void MessageReceivedHookHandler(Message receivedMessage, Message requestMessage = null);
+    public delegate void MessageReceivedHookHandler(MessageTransaction transaction);
 }

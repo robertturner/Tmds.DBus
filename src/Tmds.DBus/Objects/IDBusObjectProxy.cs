@@ -16,10 +16,18 @@ namespace Tmds.DBus.Objects
 
         IConnection Connection { get; }
 
-        IDBusObjectProxy ProxyInstance { get; }
+        object ProxyInstance { get; }
+
+        event Action<DBusException> ExceptionHook;
+
+        /// <summary>
+        /// Gives a boolean if the service goes up or down
+        /// </summary>
+        event Action<bool> ServiceUpHook;
     }
 
     public interface IDBusObjectProxy<T> : IDBusObjectProxy
     {
+        new T ProxyInstance { get; }
     }
 }

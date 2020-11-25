@@ -6,11 +6,20 @@ using System.Threading.Tasks;
 
 namespace Tmds.DBus.Objects
 {
+    public enum ProviderPreferences
+    {
+        UnableToGet,
+        Preferred,
+        Unpreffered
+    }
+
     public interface IClientObjectProvider : IDisposable
     {
         IDBusConnection DBusConnection { get; set; }
-        IDBusObjectProxy GetInstance(Type type, ObjectPath path, string interfaceName, string serviceName);
-        T GetInstance<T>(ObjectPath path, string interfaceName, string serviceName);
-        //void DisposeInstance(object instance);
+        IConnection Connection { get; }
+
+        ProviderPreferences TypePreference<T>();
+
+        T GetInstance<T>(ObjectPath path, string interfaceName, string serviceName, out IDBusObjectProxy<T> container);
     }
 }

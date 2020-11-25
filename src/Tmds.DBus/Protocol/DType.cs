@@ -18,7 +18,7 @@ namespace Tmds.DBus.Protocol
         UInt32 = (byte)'u',
         Int64 = (byte)'x',
         UInt64 = (byte)'t',
-        Single = (byte)'f', //This is not yet supported!
+        //Single = (byte)'f', //This is not yet supported!
         Double = (byte)'d',
         String = (byte)'s',
         ObjectPath = (byte)'o',

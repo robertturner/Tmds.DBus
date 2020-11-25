@@ -8,6 +8,7 @@ using System.Threading.Tasks;
 namespace Tmds.DBus.Objects.DBus
 {
     [DBusInterface(DBusConnection.DBusInterface)]
+    [StaticProxy]
     public interface IDBus
     {
         Task<string> Hello();

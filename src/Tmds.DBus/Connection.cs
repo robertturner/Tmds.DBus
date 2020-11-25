@@ -10,6 +10,7 @@ using System.Threading.Tasks;
 using Tmds.DBus.Protocol;
 using Tmds.DBus.Objects;
 using Tmds.DBus.Objects.DBus;
+using BaseLibs.Tasks;
 
 namespace Tmds.DBus
 {
@@ -45,7 +46,7 @@ namespace Tmds.DBus
             if (Interlocked.CompareExchange(ref baseConnection, newBaseConnection, null) != null)
                 throw new InvalidOperationException("Can only connect once");
             newBaseConnection = null;
-            FinishConnect(await DBusConnection.ConnectAsync(ConnectionContext, onDisconnect, cancellationToken, new ClientProxyManager(this)));
+            FinishConnect(await DBusConnection.ConnectAsync(ConnectionContext, onDisconnect, cancellationToken, new IClientObjectProvider[] { new StaticProxyManager(this), new ClientProxyManager(this) }));
         }
 
         public void Connect(IDBusConnection connection)
@@ -95,10 +96,10 @@ namespace Tmds.DBus
                 writer.WriteDocType();
                 writer.WriteNodeStart(path.Value);
                 var interfaces = Connection.BaseDBusConnection.RegisteredPathHandlers(path);
-                foreach (var @interface in interfaces)
+                foreach (var (InterfaceName, Handler) in interfaces)
                 {
-                    writer.WriteInterfaceStart(@interface.InterfaceName);
-                    var def = @interface.Handler.GetInterfaceDefinitions();
+                    writer.WriteInterfaceStart(InterfaceName);
+                    var def = Handler.GetInterfaceDefinitions();
                     foreach (var m in def.Methods)
                     {
                         writer.WriteMethodStart(m.Name);
@@ -136,9 +137,9 @@ namespace Tmds.DBus
 
             public override bool CheckExposure()
             {
-                foreach (var handler in Connection.BaseDBusConnection.RegisteredPathHandlers(CallContext.CurrentPath, "org.freedesktop.DBus.Properties"))
+                foreach (var (InterfaceName, Handler) in Connection.BaseDBusConnection.RegisteredPathHandlers(CallContext.CurrentPath, "org.freedesktop.DBus.Properties"))
                 {
-                    if (handler.Handler is ObjectAdapter adapter && adapter.Properties.Any())
+                    if (Handler is ObjectAdapter adapter && adapter.Properties.Any())
                         return true;
                 }
                 return false;
@@ -146,17 +147,21 @@ namespace Tmds.DBus
 
             public Task<object> Get(string interface_name, string property_name)
             {
-                foreach (var handler in Connection.BaseDBusConnection.RegisteredPathHandlers(CallContext.CurrentPath))
+                foreach (var (InterfaceName, Handler) in Connection.BaseDBusConnection.RegisteredPathHandlers(CallContext.CurrentPath))
                 {
-                    if (handler.InterfaceName == interface_name)
+                    if (InterfaceName == interface_name)
                     {
-                        if (handler.Handler is ObjectAdapter adapter)
+                        if (Handler is ObjectAdapter adapter)
                         {
                             if (adapter.Properties.TryGetValue(property_name, out ObjectAdapter.PropertyDetails prop))
                             {
                                 if (prop.Getter == null)
                                     throw new DBusException(DBusErrors.InvalidArgs, "Property not readable");
-                                return Task.FromResult(prop.Getter(adapter.Instance));
+                                var val = prop.Getter(adapter.Instance);
+                                if (prop.Property.IsAsync)
+                                    return (((Task)val).CastResultAs<object>());
+                                else
+                                    return Task.FromResult(val);
                             }
                             else
                                 throw new DBusException(DBusErrors.UnknownProperty, string.Empty);
@@ -172,11 +177,11 @@ namespace Tmds.DBus
 
             public Task Set(string interface_name, string property_name, object value)
             {
-                foreach (var handler in Connection.BaseDBusConnection.RegisteredPathHandlers(CallContext.CurrentPath))
+                foreach (var (InterfaceName, Handler) in Connection.BaseDBusConnection.RegisteredPathHandlers(CallContext.CurrentPath))
                 {
-                    if (handler.InterfaceName == interface_name)
+                    if (InterfaceName == interface_name)
                     {
-                        if (handler.Handler is ObjectAdapter adapter)
+                        if (Handler is ObjectAdapter adapter)
                         {
                             if (adapter.Properties.TryGetValue(property_name, out ObjectAdapter.PropertyDetails prop))
                             {
@@ -199,11 +204,11 @@ namespace Tmds.DBus
 
             public Task<Dictionary<string, object>> GetAll(string interface_name)
             {
-                foreach (var handler in Connection.BaseDBusConnection.RegisteredPathHandlers(CallContext.CurrentPath))
+                foreach (var (InterfaceName, Handler) in Connection.BaseDBusConnection.RegisteredPathHandlers(CallContext.CurrentPath))
                 {
-                    if (handler.InterfaceName == interface_name)
+                    if (InterfaceName == interface_name)
                     {
-                        if (handler.Handler is ObjectAdapter adapter)
+                        if (Handler is ObjectAdapter adapter)
                         {
                             return Task.FromResult(adapter.Properties.Where(p => p.Value.Getter != null)
                                 .ToDictionary(p => p.Key, p => p.Value.Getter(adapter.Instance)));

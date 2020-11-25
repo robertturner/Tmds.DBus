@@ -118,7 +118,7 @@ namespace Tmds.DBus.Protocol
             { typeof(UInt32), (w, v) => w.WriteUInt32((UInt32)v) },
             { typeof(Int64), (w, v) => w.WriteInt64((Int64)v) },
             { typeof(UInt64), (w, v) => w.WriteUInt64((UInt64)v) },
-            { typeof(float), (w, v) => w.WriteSingle((float)v) },
+            { typeof(float), (w, v) => w.WriteDouble((float)v) }, // WriteSingle
             { typeof(double), (w, v) => w.WriteDouble((double)v) },
             { typeof(ObjectPath), (w, v) => w.WriteObjectPath((ObjectPath)v) },
             { typeof(Signature), (w, v) => w.WriteSignature((Signature)v) },
@@ -136,7 +136,7 @@ namespace Tmds.DBus.Protocol
             { typeof(UInt32), new WriteHandler<UInt32>((w, v) => w.WriteUInt32(v)) },
             { typeof(Int64), new WriteHandler<Int64>((w, v) => w.WriteInt64(v)) },
             { typeof(UInt64), new WriteHandler<UInt64>((w, v) => w.WriteUInt64(v)) },
-            { typeof(float), new WriteHandler<float>((w, v) => w.WriteSingle(v)) },
+            { typeof(float), new WriteHandler<float>((w, v) => w.WriteDouble(v)) }, // WriteSingle
             { typeof(double), new WriteHandler<double>((w, v) => w.WriteDouble(v)) },
             { typeof(ObjectPath), new WriteHandler<ObjectPath>((w, v) => w.WriteObjectPath(v)) },
             { typeof(Signature), new WriteHandler<Signature>((w, v) => w.WriteSignature(v)) },
@@ -192,12 +192,12 @@ namespace Tmds.DBus.Protocol
         {
             MarshalTo(val, BitConverter.GetBytes);
         }
-
+#if false
         public void WriteSingle (float val)
         {
             MarshalTo(val, BitConverter.GetBytes);
         }
-
+#endif
         public void WriteDouble (double val)
         {
             MarshalTo(val, BitConverter.GetBytes);

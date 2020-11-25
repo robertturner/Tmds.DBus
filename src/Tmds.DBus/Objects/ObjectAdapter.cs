@@ -12,6 +12,7 @@ using Tmds.DBus.Protocol;
 using BaseLibs.Types;
 using BaseLibs.Collections;
 using BaseLibs.Tuples;
+using System.Collections.Concurrent;
 
 namespace Tmds.DBus.Objects
 {
@@ -26,10 +27,11 @@ namespace Tmds.DBus.Objects
         }
         public sealed class PropertyDetails
         {
-            internal PropertyDetails(MemberGetter getter, MemberSetter setter/*, string argName, Type type, Signature sig*/)
-            { Getter = getter; Setter = setter; /*ArgName = argName; Type = type; Sig = sig;*/ }
+            internal PropertyDetails(MemberGetter getter, MemberSetter setter, TypeDescription.PropertyDef def)
+            { Getter = getter; Setter = setter; Property = def; }
             public readonly MemberGetter Getter;
             public readonly MemberSetter Setter;
+            public readonly TypeDescription.PropertyDef Property;
         }
 
         sealed class SigInst : IDisposable
@@ -65,7 +67,7 @@ namespace Tmds.DBus.Objects
 
             public readonly Dictionary<(string name, Signature sig), MethodDetails> methodHandlers;
             public readonly Dictionary<string, PropertyDetails> propertyHandlers;
-            public readonly Dictionary<string, (MethodInvoker Invoker, ValueTupleGetValuesInvoker TupleValsGetter)> signalExtras;
+            public readonly Dictionary<string, MethodInvoker> signalExtras;
 
             public InterfaceInfo(TypeDescription descriptor, string interfaceName)
             {
@@ -86,8 +88,7 @@ namespace Tmds.DBus.Objects
                             }
                         }
                     }
-                    var tupleValuesGetter = s.Value.ArgsAsTuple ? s.Value.ArgTypes.AsValueTupleType().ValueTupleValuesGetter() : null;
-                    return (instMthd.DelegateForMethod(), tupleValuesGetter);
+                    return instMthd.DelegateForMethod();
                 });
                 methodHandlers = descriptor.MethodsForInfos.ToDictionary(m => (m.Key.Name, m.Value.MethodSignature),
                     m =>
@@ -114,54 +115,39 @@ namespace Tmds.DBus.Objects
                     p =>
                     {
                         var propInfo = p.Value.PropertyInfo;
-                        var sig = Signature.GetSig(propInfo.PropertyType);
+                        var sig = Signature.GetSig(p.Value.Type.Type);
                         var argNameAttr = propInfo.Attribute<DBusArgNameAttribute>();
                         return new PropertyDetails(propInfo.CanRead ? propInfo.DelegateForGetProperty() : null,
-                            propInfo.CanWrite ? propInfo.DelegateForSetProperty() : null);
+                            propInfo.CanWrite ? propInfo.DelegateForSetProperty() : null, p.Value);
                     });
             }
 
             public InterfaceObjDef InterfaceDef => Descriptor;
         }
 
-        static readonly Dictionary<Tuple<Type, string, MemberExposure>, InterfaceInfo> ifceCache = new Dictionary<Tuple<Type, string, MemberExposure>, InterfaceInfo>();
-
-        static readonly MethodInfo[] objectMethodNames = typeof(object).GetMethods(BindingFlags.Instance | BindingFlags.Public);
-
-        static InterfaceInfo InfoForIfce(Type objType, string interfaceName, MemberExposure exposure)
-        {
-            return new InterfaceInfo(TypeDescription.GetDescriptor(objType, exposure), interfaceName);
-        }
+        static readonly ConcurrentDictionary<(Type objType, string interfaceName, MemberExposure exposure), InterfaceInfo> ifceCache = new ConcurrentDictionary<(Type objType, string interfaceName, MemberExposure exposure), InterfaceInfo>();
 
         public ObjectAdapter(IConnection connnection, ObjectPath? path, string interfaceName, object instance, MemberExposure exposure, Func<Exception, bool> proxyExceptionHandler = null, SynchronizationContext syncCtx = null)
         {
             if (interfaceName == null)
                 throw new ArgumentNullException(nameof(interfaceName));
             Instance = instance ?? throw new ArgumentNullException(nameof(instance));
-            this.connnection = connnection;
+            this.connnection = connnection ?? throw new ArgumentNullException(nameof(Connection));
             this.proxyExceptionHandler = proxyExceptionHandler;
             this.syncCtx = syncCtx ?? SynchronizationContext.Current;
             contextObj = instance as ObjectContext;
 
             var objType = instance.GetType();
-
-            lock (ifceCache)
-                ifceInfo = ifceCache.GetOrSet(new Tuple<Type, string, MemberExposure>(objType, interfaceName, exposure), () => InfoForIfce(objType, interfaceName, exposure));
+            ifceInfo = ifceCache.GetOrAdd((objType, interfaceName, exposure), _ => new InterfaceInfo(TypeDescription.GetOrCreateCached(objType, exposure), interfaceName));
             
             // Register signals
             foreach (var sig in ifceInfo.Descriptor.SignalsForNames)
             {
                 var sigDef = sig.Value;
                 var sigExtras = ifceInfo.signalExtras[sig.Key];
-                Func<object[], object> signalCallback = (callbackArgs) =>
+                object SignalCallback(object[] callbackArgs)
                 {
                     CheckDisposed();
-                    if (sig.Value.ArgsAsTuple)
-                    {
-                        if (callbackArgs.Length != 1)
-                            throw new ArgumentException("Expected only one argument. Likely internal error");
-                        callbackArgs = sigExtras.TupleValsGetter(callbackArgs[0]);
-                    }
                     var msgPath = path;
                     if (sig.Value.LastParamIsPath)
                     {
@@ -185,12 +171,11 @@ namespace Tmds.DBus.Objects
                         // What should we do here? Can't think of any easy way to find/provide path
                     }
                     return null;
-                };
-                var callbackInst = sig.Value.CallbackType.BuildDynamicHandler(signalCallback);
-                var disposer = sigExtras.Invoker(Instance, callbackInst);
+                }
+                var callbackInst = sig.Value.CallbackType.BuildDynamicHandler(SignalCallback);
+                var disposer = sigExtras(Instance, callbackInst);
                 signals[sig.Key] = new SigInst(disposer);
             }
-
             if (ifceInfo.Descriptor.PropertiesForNames.Any() && instance is INotifyPropertyChanged notifyChanged)
                 notifyChanged.PropertyChanged += NotifyChanged_PropertyChanged;
         }
@@ -219,7 +204,7 @@ namespace Tmds.DBus.Objects
 
         public string InterfaceName => ifceInfo.InterfaceName;
 
-        public Object Instance { get; private set; }
+        public object Instance { get; private set; }
 
         readonly SynchronizationContext syncCtx;
 

@@ -9,12 +9,24 @@ namespace Tmds.DBus.Objects
 {
     public static class IClientObjectProvider_Extensions
     {
-        public static T GetInstance<T>(this IClientObjectProvider provider, ObjectPath path, string serviceName)
+        public static T GetInstance<T>(this IDBusConnection provider, ObjectPath path, string serviceName)
         {
             var interfaceAttribute = typeof(T).GetCustomAttribute<DBusInterfaceAttribute>(false);
             if (interfaceAttribute == null)
                 throw new ArgumentException($"{nameof(DBusInterfaceAttribute)} missing");
-            return provider.GetInstance<T>(path, interfaceAttribute.Name, serviceName);
+            return provider.GetInstance(path, interfaceAttribute.Name, serviceName, out IDBusObjectProxy<T> _);
+        }
+        public static T GetInstance<T>(this IDBusConnection provider, ObjectPath path, string serviceName, out IDBusObjectProxy<T> container)
+        {
+            var interfaceAttribute = typeof(T).GetCustomAttribute<DBusInterfaceAttribute>(false);
+            if (interfaceAttribute == null)
+                throw new ArgumentException($"{nameof(DBusInterfaceAttribute)} missing");
+            return provider.GetInstance(path, interfaceAttribute.Name, serviceName, out container);
+        }
+
+        public static T GetInstance<T>(this IClientObjectProvider provider, ObjectPath path, string interfaceName, string serviceName)
+        {
+            return provider.GetInstance(path, interfaceName, serviceName, out IDBusObjectProxy<T> _);
         }
     }
 }

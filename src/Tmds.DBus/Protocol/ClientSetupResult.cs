@@ -31,5 +31,7 @@ namespace Tmds.DBus.Protocol
         /// Indicates whether the connection supports Fd passing.
         /// </summary>
         public bool SupportsFdPassing { get; set; }
+
+        public TimeSpan InitialTimeout { get; set; } = TimeSpan.FromSeconds(2);
     }
 }
